@@ -1,13 +1,13 @@
 import torch
-from fairscale.nn.model_parallel.initialize import initialize_model_parallel, destroy_model_parallel
-from fairscale.nn.model_parallel import mpu
+from fairscale.nn.model_parallel.initialize import initialize_model_parallel #, destroy_model_parallel
+# from fairscale.nn.model_parallel import mpu
 from model import *
 from tokenizer import *
 from torch import nn
 
 # Assuming that ModelArgs, Attention, FeedForward, and other relevant classes are defined above
 # Initialize model parallelism if needed
-initialize_model_parallel(1)  # Use 1 model parallel size for simplicity
+# initialize_model_parallel(1)  # Use 1 model parallel size for simplicity
 
 def test_attention():
     # Model configuration
@@ -124,10 +124,67 @@ def build_and_test_transformer():
 # Run tests
 if __name__ == "__main__":
     # Initialize model parallel (if needed)
-    initialize_model_parallel(1)
-    test_attention()
-    test_feedforward()
-    build_and_test_transformer()
-    test_tokenizer()
-    # Cleanup model parallel
-    destroy_model_parallel()
+    # initialize_model_parallel(1)
+    # test_attention()
+    # test_feedforward()
+    # build_and_test_transformer()
+    # test_tokenizer()
+    # # Cleanup model parallel
+    # destroy_model_parallel()
+    
+    import os
+    from datasets import load_dataset
+    import sentencepiece as spm
+    import json
+
+    # Step 1: Load the dataset
+    dataset_name = "saheedniyi/nigeria_translation_data"  # Replace with your dataset name
+    # subset = "wikitext-2-raw-v1"  # Replace with the subset if applicable
+    dataset = load_dataset(dataset_name) #, subset)
+
+    # Combine all text data into one file for tokenizer training
+    output_text_file = "data.txt"
+
+    # Save the dataset to a text file
+    with open(output_text_file, "w", encoding="utf-8") as f:
+        for split in dataset.keys():  # Iterate over all splits (e.g., train, validation)
+            for entry in dataset[split]['translation']:
+                # print(entry)
+                if type(entry) == dict:
+                    # f.write(json.dumps(entry)) #
+                    f.write("\n".join([v for k, v in entry.items() if v]))
+                else:
+                    f.write(entry["text"] + "\n")  # Replace "text" with the correct key for your dataset
+
+    print(f"Training data saved to {output_text_file}")
+
+    # Step 2: Train SentencePiece tokenizer
+    model_prefix = "sabiyarn_tokenizer"  # Prefix for the tokenizer files
+    vocab_size = 151000  # Desired vocabulary size
+
+    spm.SentencePieceTrainer.train(
+        input=output_text_file,
+        model_prefix=model_prefix,
+        vocab_size=vocab_size,
+        pad_id=0,  # Padding token ID
+        bos_id=1,  # Beginning of sequence token ID
+        eos_id=2,  # End of sequence token ID
+        unk_id=3,  # Unknown token ID
+        character_coverage=0.9995,  # Coverage of characters in the dataset
+        model_type="bpe",  # Model type: unigram, bpe, char, or word
+    )
+
+    print(f"Tokenizer trained and saved with prefix {model_prefix}")
+
+    # Step 3: Verify the tokenizer works with the provided class
+    tokenizer = Tokenizer(model_path=f"{model_prefix}.model")
+
+    # Encode and decode a test string
+    test_string = "This is a test sentence for the tokenizer."
+    encoded = tokenizer.encode(test_string, bos=True, eos=True)
+    decoded = tokenizer.decode(encoded)
+
+    print(f"Original: {test_string}")
+    print(f"Encoded: {encoded}")
+    print(f"Decoded: {decoded}")
+
