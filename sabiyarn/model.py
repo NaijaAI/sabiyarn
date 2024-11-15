@@ -14,7 +14,8 @@ from fairscale.nn.model_parallel.layers import (
     RowParallelLinear,
 )
 from torch import nn
-
+from moe import MoeLayer, MoeArgs
+from typing import Optional
 
 @dataclass
 class ModelArgs:
@@ -26,7 +27,7 @@ class ModelArgs:
     multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     ffn_dim_multiplier: Optional[float] = None
     norm_eps: float = 1e-5
-
+    moe: Optional[MoeArgs] = None
     max_batch_size: int = 32
     max_seq_len: int = 2048
 
@@ -373,12 +374,24 @@ class TransformerBlock(nn.Module):
         self.dim = args.dim
         self.head_dim = args.dim // args.n_heads
         self.attention = Attention(args)
-        self.feed_forward = FeedForward(
-            dim=args.dim,
-            hidden_dim=4 * args.dim,
-            multiple_of=args.multiple_of,
-            ffn_dim_multiplier=args.ffn_dim_multiplier,
-        )
+        if args.moe is not None:
+            self.feed_forward = MoeLayer(
+                experts=[FeedForward(
+                    dim=args.dim,
+                    hidden_dim=4 * args.dim,
+                    multiple_of=args.multiple_of,
+                    ffn_dim_multiplier=args.ffn_dim_multiplier,
+                    ) for _ in range(args.moe.num_experts)],
+                gate=nn.Linear(args.dim, args.moe.num_experts, bias=False),
+                moe_args=args.moe,
+            )
+        else:             
+            self.feed_forward = FeedForward(
+                dim=args.dim,
+                hidden_dim=4 * args.dim,
+                multiple_of=args.multiple_of,
+                ffn_dim_multiplier=args.ffn_dim_multiplier,
+            )
         self.layer_id = layer_id
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
@@ -409,6 +422,81 @@ class TransformerBlock(nn.Module):
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
+class TransformerBlockJ(nn.Module):
+    def __init__(self, layer_id: int, args: ModelArgs):
+        """
+        Initialize a TransformerBlock.
+
+        Args:
+            layer_id (int): Identifier for the layer.
+            args (ModelArgs): Model configuration parameters.
+
+        Attributes:
+            n_heads (int): Number of attention heads.
+            dim (int): Dimension size of the model.
+            head_dim (int): Dimension size of each attention head.
+            attention (Attention): Attention module.
+            feed_forward (FeedForward): FeedForward module.
+            layer_id (int): Identifier for the layer.
+            attention_norm (RMSNorm): Layer normalization for attention output.
+            ffn_norm (RMSNorm): Layer normalization for feedforward output.
+
+        """
+        super().__init__()
+        self.n_heads = args.n_heads
+        self.dim = args.dim
+        self.head_dim = args.dim // args.n_heads
+        self.attention = Attention(args)
+        self.linear_j = nn.Linear(args.dim, args.dim)
+        self.feed_forward: nn.Module
+        if args.moe is not None:
+            self.feed_forward = MoeLayer(
+                experts=[FeedForward(
+                    dim=args.dim,
+                    hidden_dim=4 * args.dim,
+                    multiple_of=args.multiple_of,
+                    ffn_dim_multiplier=args.ffn_dim_multiplier,
+                    ) for _ in range(args.moe.num_experts)],
+                gate=nn.Linear(args.dim, args.moe.num_experts, bias=False),
+                moe_args=args.moe,
+            )
+        else:             
+            self.feed_forward = FeedForward(
+                dim=args.dim,
+                hidden_dim=4 * args.dim,
+                multiple_of=args.multiple_of,
+                ffn_dim_multiplier=args.ffn_dim_multiplier,
+            )
+        self.layer_id = layer_id
+        self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        start_pos: int,
+        freqs_cis: torch.Tensor,
+        mask: Optional[torch.Tensor],
+    ):
+        """
+        Perform a forward pass through the TransformerBlock.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+            start_pos (int): Starting position for attention caching.
+            freqs_cis (torch.Tensor): Precomputed cosine and sine frequencies.
+            mask (torch.Tensor, optional): Masking tensor for attention. Defaults to None.
+
+        Returns:
+            torch.Tensor: Output tensor after applying attention and feedforward layers.
+
+        """
+        x_norm = self.attention_norm(x)
+        h = x + self.attention(
+            x_norm, start_pos, freqs_cis, mask
+        ) + self.linear_j(x_norm)
+        out = h + self.feed_forward(self.ffn_norm(h))
+        return out
 
 class Transformer(nn.Module):
     def __init__(self, params: ModelArgs):
