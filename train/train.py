@@ -26,12 +26,15 @@ import numpy as np
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
+from cut_cross_entropy import linear_cross_entropy
 
-from model import GPTConfig, GPT, GPTJ
+from sabiyarn.model import ModelArgs, SabiYarn
+from sabiyarn.differential_attention import DiffAttnArgs
 from utils import *
 from constant_tokens import MASK
 from dotenv import load_dotenv
 from training_attention_mask import create_causal_mask
+import wandb
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
 
@@ -200,8 +203,9 @@ if init_from == 'scratch':
     # if meta_vocab_size is None:
     #     print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
     # model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
-    gptconf = GPTConfig(**model_args)
-    model = GPTJ(gptconf)
+    model_args = ModelArgs
+    diff_attn_args = DiffAttnArgs
+    model = SabiYarn(model_args,diff_attn_args)
 elif init_from == 'resume':
     print(f"Resuming training from {out_dir}")
     # resume training from a checkpoint.
@@ -213,8 +217,9 @@ elif init_from == 'resume':
     for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
         model_args[k] = checkpoint_model_args[k]
     # create the model
-    gptconf = GPTConfig(**model_args)
-    model = GPT(gptconf)
+    model_args = ModelArgs
+    diff_attn_args = DiffAttnArgs
+    model = SabiYarn(model_args,diff_attn_args)
     state_dict = checkpoint['model']
     # fix the keys of the state dictionary :(
     # honestly no idea how checkpoints sometimes get this prefix, have to debug more
@@ -283,7 +288,14 @@ def estimate_loss():
                 attn_mask = _prepare_mask_(b, block_size = config["block_size"])
                 attn_mask = torch.where(create_causal_mask(X, attn_mask) == 0, False, True)
                 attn_mask.to(device)
-                logits, loss = model(X, Y, attn_mask = attn_mask)
+                hidden_states, logits = model(X, start_pos=0)
+                Y[~attn_mask] = -100 #
+                loss = linear_cross_entropy(
+                hidden_states,
+                model.lm_head.weight,
+                Y.to(hidden_states.device),
+                shift=True
+                )
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()

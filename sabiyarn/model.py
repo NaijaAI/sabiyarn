@@ -16,6 +16,7 @@ from fairscale.nn.model_parallel.layers import (
 from torch import nn
 from moe import MoeLayer, MoeArgs
 from typing import Optional
+from differential_attention import DiffAttention, DiffAttnArgs
 
 @dataclass
 class ModelArgs:
@@ -30,6 +31,8 @@ class ModelArgs:
     moe: Optional[MoeArgs] = None
     max_batch_size: int = 32
     max_seq_len: int = 2048
+    attention_type: str = "differential_attention"
+
 
 
 class RMSNorm(torch.nn.Module):
@@ -352,7 +355,7 @@ class FeedForward(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, layer_id: int, args: ModelArgs):
+    def __init__(self, layer_id: int, args: ModelArgs, diff_args: Optional[DiffAttnArgs] = None):
         """
         Initialize a TransformerBlock.
 
@@ -375,7 +378,14 @@ class TransformerBlock(nn.Module):
         self.n_heads = args.n_heads
         self.dim = args.dim
         self.head_dim = args.dim // args.n_heads
-        self.attention = Attention(args)
+        self.layer_id = layer_id
+        if args.attention_type == "self_attention":
+          self.attention = Attention(args)
+        elif args.attention_type == "differential_attention":
+          if diff_args is None:
+            raise ValueError("DiffAttnArgs must be provided to use differential attention")
+          diff_args.depth = self.layer_id
+          self.attention = DiffAttention(diff_args)
         if args.moe is not None:
             self.feed_forward = MoeLayer(
                 experts=[FeedForward(
@@ -387,14 +397,13 @@ class TransformerBlock(nn.Module):
                 gate=nn.Linear(args.dim, args.moe.num_experts, bias=False),
                 moe_args=args.moe,
             )
-        else:             
+        else:
             self.feed_forward = FeedForward(
                 dim=args.dim,
                 hidden_dim=4 * args.dim,
                 multiple_of=args.multiple_of,
                 ffn_dim_multiplier=args.ffn_dim_multiplier,
             )
-        self.layer_id = layer_id
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
 
@@ -425,7 +434,7 @@ class TransformerBlock(nn.Module):
         return out
 
 class TransformerBlockJ(nn.Module):
-    def __init__(self, layer_id: int, args: ModelArgs):
+    def __init__(self, layer_id: int, args: ModelArgs, diff_args: DiffAttnArgs):
         """
         Initialize a TransformerBlock.
 
@@ -448,7 +457,14 @@ class TransformerBlockJ(nn.Module):
         self.n_heads = args.n_heads
         self.dim = args.dim
         self.head_dim = args.dim // args.n_heads
-        self.attention = Attention(args)
+        self.layer_id = layer_id
+        if args.attention_type == "self_attention":
+          self.attention = Attention(args)
+        elif args.attention_type == "differential_attention":
+          if diff_args is None:
+            raise ValueError("DiffAttnArgs must be provided to use differential attention")
+          diff_args.depth = self.layer_id
+          self.attention = DiffAttention(diff_args)
         self.linear_j = nn.Linear(args.dim, args.dim)
         self.feed_forward: nn.Module
         if args.moe is not None:
@@ -469,7 +485,6 @@ class TransformerBlockJ(nn.Module):
                 multiple_of=args.multiple_of,
                 ffn_dim_multiplier=args.ffn_dim_multiplier,
             )
-        self.layer_id = layer_id
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
 
@@ -500,13 +515,14 @@ class TransformerBlockJ(nn.Module):
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
-class Transformer(nn.Module):
-    def __init__(self, params: ModelArgs):
+class SabiYarn(nn.Module):
+    def __init__(self, params: ModelArgs, diff_attn_args: DiffAttnArgs = None):
         """
         Initialize a Transformer model.
 
         Args:
             params (ModelArgs): Model configuration parameters.
+            diff_attn_Args( DiffAttnArgs): configuration parameters for Differential Attention.
 
         Attributes:
             params (ModelArgs): Model configuration parameters.
@@ -524,26 +540,32 @@ class Transformer(nn.Module):
         self.vocab_size = params.vocab_size
         self.n_layers = params.n_layers
 
-        self.tok_embeddings = ParallelEmbedding(
-            params.vocab_size, params.dim, init_method=lambda x: x
+        self.tok_embeddings = nn.Embedding(
+            params.vocab_size, params.dim,
         )
 
         self.layers = torch.nn.ModuleList()
         for layer_id in range(params.n_layers):
-            self.layers.append(TransformerBlock(layer_id, params))
+            self.layers.append(TransformerBlock(layer_id, params, diff_attn_args))
 
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
-        self.output = ColumnParallelLinear(
-            params.dim, params.vocab_size, bias=False, init_method=lambda x: x
+        self.lm_head = nn.Linear(
+            params.dim, params.vocab_size, bias=False,
         )
-
-        self.freqs_cis = precompute_freqs_cis(
-            # Note that self.params.max_seq_len is multiplied by 2 because the token limit for the Llama 2 generation of models is 4096. 
+        if params.attention_type == "self_attention":
+          self.freqs_cis = precompute_freqs_cis(
+            # Note that self.params.max_seq_len is multiplied by 2 because the token limit for the Llama 2 generation of models is 4096.
             # Adding this multiplier instead of using 4096 directly allows for dynamism of token lengths while training or fine-tuning.
             self.params.dim // self.params.n_heads, self.params.max_seq_len * 2
         )
+        elif params.attention_type == "differential_attention":
+          self.freqs_cis = precompute_freqs_cis(
+            # Note that self.params.max_seq_len is multiplied by 2 because the token limit for the Llama 2 generation of models is 4096.
+            # Adding this multiplier instead of using 4096 directly allows for dynamism of token lengths while training or fine-tuning.
+            #differential attention uses half the head_dim for key and query vectors
+            diff_attn_args.embed_dim // diff_attn_args.n_heads // 2, self.params.max_seq_len * 2
+        )
 
-    @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int):
         """
         Perform a forward pass through the Transformer model.
@@ -580,7 +602,7 @@ class Transformer(nn.Module):
 
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
-        h = self.norm(h)
-        output = self.output(h).float()
-        return output
+        hidden_states = self.norm(h)
+        output = self.lm_head(hidden_states).float()
+        return hidden_states, output
  

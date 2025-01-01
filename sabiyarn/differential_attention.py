@@ -1,21 +1,21 @@
-""" Multihead Differential Attention Module"""
+"""Implementation of Multihead Differential Attention """
 import torch
 from torch import nn
 import torch.nn.functional as F
 import math
 from typing import Tuple
-import dataclasses
+from dataclasses import dataclass
 from typing import Optional
 
-@dataclasses.dataclass
+@dataclass
 class DiffAttnArgs:
+    depth: int #will be determined in the model
+    max_batch_size: int = 32
     n_heads: int = 16 #half of the transformers num_head
-    dim: int = 4096
-    depth: int
+    embed_dim: int = 4096
     n_kv_heads: Optional[int] = None
     max_seq_len: int = 2048
     norm_eps: int = 1e-5
-    max_batch_size: int 
 
 
 
@@ -81,8 +81,8 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     Returns:
         torch.Tensor: Precomputed frequency tensor with complex exponentials.
 
-    
-        
+
+
 
     """
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
@@ -138,7 +138,7 @@ def apply_rotary_emb(
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: Tuple of modified query tensor and key tensor with rotary embeddings.
 
-        
+
 
     """
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
@@ -150,14 +150,22 @@ def apply_rotary_emb(
 
 
 def lambda_init_fn(depth):
+      """
+      Function for calculating Lambda_init
+      Args:
+            depth (int): Decoder layer index containing the attention mechanism.
+      Returns:
+            float: lambda init value.
+      """
+
       return 0.8 - 0.6 * math.exp(-0.3 * depth)
 
 
 class DiffAttention(nn.Module):
-  def __init__(self, args: DiffAttnArgs, embed_dim, num_heads, context_length, depth):
-    """ 
+  def __init__(self, args: DiffAttnArgs):
+    """
     Initialize the Differential Attention Module.
-    
+
     Args:
         args (DiffAttnArgs): Model configuration parameters.
     Attributes:
@@ -182,19 +190,19 @@ class DiffAttention(nn.Module):
     super().__init__()
     self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads
     self.num_heads = args.n_heads # half of transformers head
-    self.head_dim = args.dim // args.n_heads // 2
+    self.head_dim = args.embed_dim // args.n_heads // 2
     self.scaling = self.head_dim ** -0.5
-
-    self.wq = nn.Linear(embed_dim, embed_dim, bias=False)
-    self.wk = nn.Linear(embed_dim, embed_dim, bias=False)
-    self.wv = nn.Linear(embed_dim, embed_dim, bias=False)
-    self.out_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+    self.depth = args.depth
+    self.wq = nn.Linear(args.embed_dim, args.embed_dim, bias=False)
+    self.wk = nn.Linear(args.embed_dim, args.embed_dim, bias=False)
+    self.wv = nn.Linear(args.embed_dim, args.embed_dim, bias=False)
+    self.out_proj = nn.Linear(args.embed_dim, args.embed_dim, bias=False)
 
     self.cache_k = torch.zeros(
         (
             args.max_batch_size,
             args.max_seq_len,
-            args.n_heads,
+            args.n_heads*2,
             self.head_dim
         )
     )
@@ -204,18 +212,19 @@ class DiffAttention(nn.Module):
             args.max_batch_size,
             args.max_seq_len,
             args.n_heads,
-            self.head_dim
+            self.head_dim*2
         )
     )
 
-    self.lambda_init = lambda_init_fn(args.depth)
-    self.lambda_q1 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32))
-    self.lambda_q2 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32))
-    self.lambda_k1 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32))
-    self.lambda_k2 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32))
+    self.lambda_init = lambda_init_fn(self.depth)
+    self.lambda_q1 = nn.Parameter(torch.normal(mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32))
+    self.lambda_q2 = nn.Parameter(torch.normal(mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32))
+    self.lambda_k1 = nn.Parameter(torch.normal(mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32))
+    self.lambda_k2 = nn.Parameter(torch.normal(mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32))
 
     self.sublayer_norm = RMSNorm(2 * self.head_dim, eps=1e-5,)
-  def forward(self, 
+  
+  def forward(self,
               x: torch.Tensor,
               start_pos: int,
               freqs_cis: torch.Tensor,
@@ -243,35 +252,35 @@ class DiffAttention(nn.Module):
 
     q,k = apply_rotary_emb(q, k, freqs_cis)
 
-    self.cache_k = self.cache_k.to(q)
-    self.cache_v = self.cache_v.to(q)
-    
+    self.cache_k = self.cache_k.to(k)
+    self.cache_v = self.cache_v.to(v)
+
     self.cache_k[:bsz, start_pos : start_pos + src_len] = k
     self.cache_v[:bsz, start_pos : start_pos + src_len] = v
 
-    k = self.cache_k[:bsz, :start_pos + src_len]
-    v = self.cache_v[:bsz, :start_pos + src_len]
+    keys = self.cache_k[:bsz, :start_pos + src_len]
+    values = self.cache_v[:bsz, :start_pos + src_len]
 
     offset = src_len - tgt_len
     q *= self.scaling
 
     q = q.transpose(1,2)
-    k = k.transpose(1,2)
-    v = v.transpose(1,2)
+    keys = keys.transpose(1,2)
+    values = values.transpose(1,2)
 
-    attn_weights = torch.matmul(q, k.transpose(2,3))
+    attn_scores = torch.matmul(q, keys.transpose(2,3))
     if attn_mask is None:
       attn_mask = torch.triu(
           torch.zeros((tgt_len, tgt_len)
           ).float()
-          .type_as(attn_weights),
+          .type_as(attn_scores),
           diagonal= 1+offset
       )
-    
-    attn_weights = torch.nan_to_num(attn_weights)
-    attn_weights += attn_mask
-    attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).type_as(
-        attn_weights
+
+    attn_scores = torch.nan_to_num(attn_scores)
+    attn_scores += attn_mask
+    attn_weights = F.softmax(attn_scores, dim=-1, dtype=torch.float32).type_as(
+        attn_scores
     )
     lambda_1 = torch.exp(
         torch.sum(
@@ -282,15 +291,15 @@ class DiffAttention(nn.Module):
     lambda_full = lambda_1 - lambda_2 + self.lambda_init
 
     attn_weights = attn_weights.view(
-        bsz, 
+        bsz,
         self.num_heads,
         2, tgt_len, src_len)
     attn_weights = attn_weights[:, :, 0] - lambda_full * attn_weights[:, :, 1]
 
-    ctx_vec= torch.matmul(attn_weights, v)
+    ctx_vec= torch.matmul(attn_weights, values)
     ctx_vec = self.sublayer_norm(ctx_vec)
     ctx_vec = ctx_vec.transpose(1,2).reshape(
-        bsz, tgt_len, 
+        bsz, tgt_len,
         self.num_heads * 2 * self.head_dim)
     ctx_vec = self.out_proj(ctx_vec)
 
