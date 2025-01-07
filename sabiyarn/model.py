@@ -14,6 +14,7 @@ from fairscale.nn.model_parallel.layers import (
     RowParallelLinear,
 )
 from torch import nn
+
 from moe import MoeLayer, MoeArgs
 from typing import Optional
 from differential_attention import DiffAttention, DiffAttnArgs
@@ -308,8 +309,6 @@ class Attention(nn.Module):
         return self.wo(output)
 
 
-
-
 class FeedForward(nn.Module):
     def __init__(
         self,
@@ -380,12 +379,12 @@ class TransformerBlock(nn.Module):
         self.head_dim = args.dim // args.n_heads
         self.layer_id = layer_id
         if args.attention_type == "self_attention":
-          self.attention = Attention(args)
+            self.attention = Attention(args)
         elif args.attention_type == "differential_attention":
-          if diff_args is None:
-            raise ValueError("DiffAttnArgs must be provided to use differential attention")
-          diff_args.depth = self.layer_id
-          self.attention = DiffAttention(diff_args)
+            if diff_args is None:
+                raise ValueError("DiffAttnArgs must be provided to use differential attention")
+            diff_args.depth = self.layer_id
+            self.attention = DiffAttention(diff_args)
         if args.moe is not None:
             self.feed_forward = MoeLayer(
                 experts=[FeedForward(
@@ -559,14 +558,17 @@ class SabiYarn(nn.Module):
             self.params.dim // self.params.n_heads, self.params.max_seq_len * 2
         )
         elif params.attention_type == "differential_attention":
-          self.freqs_cis = precompute_freqs_cis(
-            # Note that self.params.max_seq_len is multiplied by 2 because the token limit for the Llama 2 generation of models is 4096.
-            # Adding this multiplier instead of using 4096 directly allows for dynamism of token lengths while training or fine-tuning.
-            #differential attention uses half the head_dim for key and query vectors
-            diff_attn_args.embed_dim // diff_attn_args.n_heads // 2, self.params.max_seq_len * 2
-        )
+            self.freqs_cis = precompute_freqs_cis(
+                # Note that self.params.max_seq_len is multiplied by 2
+                # because the token limit for the Llama 2 generation of models is 4096.
+                # Adding this multiplier instead of using 4096 directly allows
+                # for dynamism of token lengths while training or fine-tuning.
+                # differential attention uses half the head_dim for key and
+                # query vectors
+                diff_attn_args.embed_dim // diff_attn_args.n_heads // 2, self.params.max_seq_len * 2
+            )
 
-    def forward(self, tokens: torch.Tensor, start_pos: int):
+    def forward(self, tokens: torch.Tensor, start_pos: int, _mask=None):
         """
         Perform a forward pass through the Transformer model.
 
@@ -583,26 +585,25 @@ class SabiYarn(nn.Module):
         self.freqs_cis = self.freqs_cis.to(h.device)
         freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
 
-        mask = None
-        if seqlen > 1:
-            mask = torch.full(
-                (seqlen, seqlen), float("-inf"), device=tokens.device
-            )
+        if mask == None:
+            if seqlen > 1:
+                mask = torch.full(
+                    (seqlen, seqlen), float("-inf"), device=tokens.device
+                )
 
-            mask = torch.triu(mask, diagonal=1)
+                mask = torch.triu(mask, diagonal=1)
 
-            # When performing key-value caching, we compute the attention scores
-            # only for the new sequence. Thus, the matrix of scores is of size
-            # (seqlen, cache_len + seqlen), and the only masked entries are (i, j) for
-            # j > cache_len + i, since row i corresponds to token cache_len + i.
-            mask = torch.hstack([
-                torch.zeros((seqlen, start_pos), device=tokens.device),
-                mask
-            ]).type_as(h)
+                # When performing key-value caching, we compute the attention scores
+                # only for the new sequence. Thus, the matrix of scores is of size
+                # (seqlen, cache_len + seqlen), and the only masked entries are (i, j) for
+                # j > cache_len + i, since row i corresponds to token cache_len + i.
+                mask = torch.hstack([
+                    torch.zeros((seqlen, start_pos), device=tokens.device),
+                    mask
+                ]).type_as(h)
 
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
         hidden_states = self.norm(h)
         output = self.lm_head(hidden_states).float()
         return hidden_states, output
- 
