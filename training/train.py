@@ -302,11 +302,11 @@ def estimate_loss():
             X, Y = get_batch(split)
             b = len(X)
             with ctx:
-                attn_mask = _prepare_mask_(b, block_size = config["block_size"])
+                attn_mask = _prepare_mask_(b, block_size=config["block_size"])
                 attn_mask = torch.where(create_causal_mask(X, attn_mask) == 0, False, True)
                 attn_mask.to(device)
                 hidden_states, logits = model(X, start_pos=0)
-                Y[~attn_mask] = -100 #
+                Y[~attn_mask] = -100
                 loss = linear_cross_entropy(
                 hidden_states,
                 model.lm_head.weight,

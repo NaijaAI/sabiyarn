@@ -40,6 +40,8 @@ def track_restarts(restart_tracker: modal.Dict) -> int:
 
 def prepare_train():
     from ..data import prepare
+    import subprocess 
+    subprocess.run()
 
 
 def train():

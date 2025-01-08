@@ -5,7 +5,7 @@ import os
 from tqdm import tqdm
 import numpy as np
 #import tiktoken
-from datasets import load_dataset # huggingface datasets
+from datasets import load_dataset
 import yaml
 from transformers import AutoTokenizer
 import json
@@ -145,18 +145,18 @@ if __name__ == '__main__':
                 remove_columns=['text'],
                 desc="tokenizing the splits",
                 num_proc=num_proc,
-                #fn_kwargs={'enc':enc}
+                # fn_kwargs={'enc':enc}
             )
 
             # concatenate all the ids in each dataset into one large file we can use for training
             for split, dset in tokenized.items():
                 arr_len = np.sum(dset['len'], dtype=np.uint64)
                 if split.lower() == 'train':
-                    filename = config["train_data_path"] #os.path.join(os.path.dirname(__file__), f'{split}.bin')
+                    filename = config["train_data_path"]  # os.path.join(os.path.dirname(__file__), f'{split}.bin')
                 else:
                     filename = config["eval_data_path"]
                     
-                dtype = np.uint16 # (can do since enc.max_token_value == 50256 is < 2**16)
+                dtype = np.uint16  # (can do since enc.max_token_value == 50256 is < 2**16)
                 if os.path.exists(filename):
                     arr = np.memmap(filename, dtype=dtype, mode='r+', shape=(arr_len,))
                 else:
@@ -165,7 +165,7 @@ if __name__ == '__main__':
                 if small_data:
                     total_batches = 1
                 else:
-                    total_batches = 32 if split=='train' else 32
+                    total_batches = 32 if split == 'train' else 32
 
                 idx = 0
                 for batch_idx in tqdm(range(total_batches), desc=f'writing {filename}'):
@@ -173,7 +173,7 @@ if __name__ == '__main__':
                     batch = dset.shard(num_shards=total_batches, index=batch_idx, contiguous=True).with_format('numpy')
                     arr_batch = np.concatenate(batch['ids'])
                     # Write into mmap
-                    arr[idx : idx + len(arr_batch)] = arr_batch
+                    arr[idx:idx + len(arr_batch)] = arr_batch
                     idx += len(arr_batch)
                 arr.flush()
 

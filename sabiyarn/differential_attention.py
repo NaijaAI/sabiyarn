@@ -11,12 +11,11 @@ from typing import Optional
 class DiffAttnArgs:
     depth: int #will be determined in the model
     max_batch_size: int = 32
-    n_heads: int = 16 #half of the transformers num_head
+    n_heads: int = 6 #half of the transformers num_head
     embed_dim: int = 4096
     n_kv_heads: Optional[int] = None
-    max_seq_len: int = 2048
+    max_seq_len: int = 1024
     norm_eps: int = 1e-5
-
 
 
 class RMSNorm(torch.nn.Module):

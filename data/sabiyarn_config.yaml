@@ -19,8 +19,8 @@ use_cache: True
 layer_norm_epsilon: 1e-6
 window: 64
 dropout: 0.0 # for pretraining 0 is good, for finetuning try 0.1+
-vocab_size: 52000
-hidden_size: 768
+vocab_size: 52050
+hidden_size: 4096
 num_hidden_layers: 4
 num_attention_heads: 12
 num_key_value_heads: 6
@@ -37,7 +37,7 @@ dataset: "Aletheia-ng/naijaweb-edu"
 num_proc: 128
 train_data_path: "./train.bin" # CHANGE
 eval_data_path: "./val.bin"
-test_size: 0.5 # The fraction of the original test set to use during training (done to save compute time). It should be a value between 0 and 1.
+test_size: 0.2 # The fraction of the original test set to use during training (done to save compute time). It should be a value between 0 and 1.
 data_version: null
 max_length: 512
 
