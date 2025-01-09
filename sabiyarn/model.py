@@ -17,22 +17,26 @@ from torch import nn
 
 from moe import MoeLayer, MoeArgs
 from typing import Optional
+from memory_reasoning import LogicNetwork
 from differential_attention import DiffAttention, DiffAttnArgs
 
 @dataclass
 class ModelArgs:
-    dim: int = 768
-    n_layers: int = 12
-    n_heads: int = 12
+    dim: int = 4096
+    n_layers: int = 32
+    n_heads: int = 32
     n_kv_heads: Optional[int] = None
     vocab_size: int = -1  # defined later by tokenizer
     multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     ffn_dim_multiplier: Optional[float] = None
     norm_eps: float = 1e-5
     moe: Optional[MoeArgs] = None
+    logic_network: Optional[bool] = False
     max_batch_size: int = 32
-    max_seq_len: int = 1024
-    attention_type: str = "differential_attention"
+    max_seq_len: int = 2048
+    use_j: bool = True
+    diff_args: Optional[DiffAttnArgs] = None
+
 
 
 class RMSNorm(torch.nn.Module):
@@ -377,13 +381,12 @@ class TransformerBlock(nn.Module):
         self.dim = args.dim
         self.head_dim = args.dim // args.n_heads
         self.layer_id = layer_id
-        if args.attention_type == "self_attention":
-            self.attention = Attention(args)
-        elif args.attention_type == "differential_attention":
-            if diff_args is None:
-                raise ValueError("DiffAttnArgs must be provided to use differential attention")
+        if args.diff_args is not None:
+            diff_args = args.diff_args()
             diff_args.depth = self.layer_id
-            self.attention = DiffAttention(diff_args)
+            self.attention = DiffAttention(args.diff_args)
+        else:
+            self.attention = Attention(args)  
         if args.moe is not None:
             self.feed_forward = MoeLayer(
                 experts=[FeedForward(
@@ -402,6 +405,14 @@ class TransformerBlock(nn.Module):
                 multiple_of=args.multiple_of,
                 ffn_dim_multiplier=args.ffn_dim_multiplier,
             )
+            
+        if args.logic_network is not None:
+            self.logic_gate = LogicNetwork(args.dim)
+            self.logic_network = True
+        else:
+            self.logic_network = False
+            
+        self.layer_id = layer_id
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
 
@@ -428,11 +439,14 @@ class TransformerBlock(nn.Module):
         h = x + self.attention(
             self.attention_norm(x), start_pos, freqs_cis, mask
         )
+        if self.logic_network:
+            h *= self.logic_gate(h)
+            
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
 class TransformerBlockJ(nn.Module):
-    def __init__(self, layer_id: int, args: ModelArgs, diff_args: DiffAttnArgs):
+    def __init__(self, layer_id: int, args: ModelArgs):
         """
         Initialize a TransformerBlock.
 
@@ -456,13 +470,12 @@ class TransformerBlockJ(nn.Module):
         self.dim = args.dim
         self.head_dim = args.dim // args.n_heads
         self.layer_id = layer_id
-        if args.attention_type == "self_attention":
-          self.attention = Attention(args)
-        elif args.attention_type == "differential_attention":
-          if diff_args is None:
-            raise ValueError("DiffAttnArgs must be provided to use differential attention")
-          diff_args.depth = self.layer_id
-          self.attention = DiffAttention(diff_args)
+        if args.diff_args is not None:
+            diff_args = args.diff_args()
+            diff_args.depth = self.layer_id
+            self.attention = DiffAttention(args.diff_args)
+        else:
+            self.attention = Attention(args)            
         self.linear_j = nn.Linear(args.dim, args.dim)
         self.feed_forward: nn.Module
         if args.moe is not None:
@@ -483,6 +496,14 @@ class TransformerBlockJ(nn.Module):
                 multiple_of=args.multiple_of,
                 ffn_dim_multiplier=args.ffn_dim_multiplier,
             )
+        
+        if args.logic_network is not None:
+            self.logic_gate = LogicNetwork(args.dim)
+            self.logic_network = True
+        else:
+            self.logic_network = False
+            
+        self.layer_id = layer_id
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
 
@@ -510,6 +531,10 @@ class TransformerBlockJ(nn.Module):
         h = x + self.attention(
             x_norm, start_pos, freqs_cis, mask
         ) + self.linear_j(x_norm)
+        
+        if self.logic_network:
+            h *= self.logic_gate(h)
+            
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
 
@@ -543,8 +568,12 @@ class SabiYarn(nn.Module):
         )
 
         self.layers = torch.nn.ModuleList()
-        for layer_id in range(params.n_layers):
-            self.layers.append(TransformerBlock(layer_id, params, diff_attn_args))
+        if params.use_j:
+            for layer_id in range(params.n_layers):
+                self.layers.append(TransformerBlockJ(layer_id, params))
+        else:
+            for layer_id in range(params.n_layers):
+                self.layers.append(TransformerBlock(layer_id, params))
 
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.lm_head = nn.Linear(
@@ -567,7 +596,7 @@ class SabiYarn(nn.Module):
                 diff_attn_args.embed_dim // diff_attn_args.n_heads // 2, self.params.max_seq_len * 2
             )
 
-    def forward(self, tokens: torch.Tensor, start_pos: int, _mask=None):
+    def forward(self, tokens: torch.Tensor, start_pos: int, mask=None):
         """
         Perform a forward pass through the Transformer model.
 
