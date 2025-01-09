@@ -9,9 +9,9 @@ from typing import Optional
 
 @dataclass
 class DiffAttnArgs:
-    depth: int #will be determined in the model
+    depth: int  # will be determined in the model
     max_batch_size: int = 32
-    n_heads: int = 6 #half of the transformers num_head
+    n_heads: int = 6  # half of the transformers num_head
     embed_dim: int = 4096
     n_kv_heads: Optional[int] = None
     max_seq_len: int = 1024
@@ -132,10 +132,12 @@ def apply_rotary_emb(
     Args:
         xq (torch.Tensor): Query tensor to apply rotary embeddings.
         xk (torch.Tensor): Key tensor to apply rotary embeddings.
-        freqs_cis (torch.Tensor): Precomputed frequency tensor for complex exponentials.
+        freqs_cis (torch.Tensor): Precomputed frequency tensor 
+        for complex exponentials.
 
     Returns:
-        Tuple[torch.Tensor, torch.Tensor]: Tuple of modified query tensor and key tensor with rotary embeddings.
+        Tuple[torch.Tensor, torch.Tensor]: Tuple of modified query tensor 
+        and key tensor with rotary embeddings.
 
 
 
@@ -149,158 +151,161 @@ def apply_rotary_emb(
 
 
 def lambda_init_fn(depth):
-      """
-      Function for calculating Lambda_init
-      Args:
-            depth (int): Decoder layer index containing the attention mechanism.
-      Returns:
-            float: lambda init value.
-      """
+        """
+        Function for calculating Lambda_init
+        Args:
+                depth (int): Decoder layer index containing the attention mechanism.
+        Returns:
+                float: lambda init value.
+        """
 
-      return 0.8 - 0.6 * math.exp(-0.3 * depth)
+        return 0.8 - 0.6 * math.exp(-0.3 * depth)
 
 
 class DiffAttention(nn.Module):
-  def __init__(self, args: DiffAttnArgs):
-    """
-    Initialize the Differential Attention Module.
-
-    Args:
-        args (DiffAttnArgs): Model configuration parameters.
-    Attributes:
-        n_kv_heads (int): Number of key and value heads.
-        n_local_heads (int): Number of local query heads.
-        n_local_kv_heads (int): Number of local key and value heads.
-        n_rep (int): Number of repetitions for local heads.
-        head_dim (int): Dimension size of each attention head.
-        wq (nn.Linear): Linear transformation for queries.
-        wk (nn.Linear): Linear transformation for keys.
-        wv (nn.Linear): Linear transformation for values.
-        out_proj (nn.Linear): Linear transformation for output.
-        cache_k (torch.Tensor): Cached keys for attention.
-        cache_v (torch.Tensor): Cached values for attention.
-        lambda_init: initial lambda value
-        lambda_q1 (nn.Parameter): lambda for queries in first attention map
-        lambda_q2 (nn.Parameter): lambda for queries in second attention map
-        lambda_k1 (nn.Parameter): lambda for keys in first attention map
-        lambda_k2 (nn.Parameter): lambda for keys in second attention map
-        sublayer_norm: RMSNorm for sub attention layers
+    def __init__(self, args: DiffAttnArgs):
         """
-    super().__init__()
-    self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads
-    self.num_heads = args.n_heads # half of transformers head
-    self.head_dim = args.embed_dim // args.n_heads // 2
-    self.scaling = self.head_dim ** -0.5
-    self.depth = args.depth
-    self.wq = nn.Linear(args.embed_dim, args.embed_dim, bias=False)
-    self.wk = nn.Linear(args.embed_dim, args.embed_dim, bias=False)
-    self.wv = nn.Linear(args.embed_dim, args.embed_dim, bias=False)
-    self.out_proj = nn.Linear(args.embed_dim, args.embed_dim, bias=False)
+        Initialize the Differential Attention Module.
 
-    self.cache_k = torch.zeros(
-        (
-            args.max_batch_size,
-            args.max_seq_len,
-            args.n_heads*2,
-            self.head_dim
+        Args:
+            args (DiffAttnArgs): Model configuration parameters.
+        Attributes:
+            n_kv_heads (int): Number of key and value heads.
+            n_local_heads (int): Number of local query heads.
+            n_local_kv_heads (int): Number of local key and value heads.
+            n_rep (int): Number of repetitions for local heads.
+            head_dim (int): Dimension size of each attention head.
+            wq (nn.Linear): Linear transformation for queries.
+            wk (nn.Linear): Linear transformation for keys.
+            wv (nn.Linear): Linear transformation for values.
+            out_proj (nn.Linear): Linear transformation for output.
+            cache_k (torch.Tensor): Cached keys for attention.
+            cache_v (torch.Tensor): Cached values for attention.
+            lambda_init: initial lambda value
+            lambda_q1 (nn.Parameter): lambda for queries in first attention map
+            lambda_q2 (nn.Parameter): lambda for queries in second attention map
+            lambda_k1 (nn.Parameter): lambda for keys in first attention map
+            lambda_k2 (nn.Parameter): lambda for keys in second attention map
+            sublayer_norm: RMSNorm for sub attention layers
+            """
+        super().__init__()
+        self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads
+        self.num_heads = args.n_heads # half of transformers head
+        self.head_dim = args.embed_dim // args.n_heads // 2
+        self.scaling = self.head_dim ** -0.5
+        self.depth = args.depth
+        self.wq = nn.Linear(args.embed_dim, args.embed_dim, bias=False)
+        self.wk = nn.Linear(args.embed_dim, args.embed_dim, bias=False)
+        self.wv = nn.Linear(args.embed_dim, args.embed_dim, bias=False)
+        self.out_proj = nn.Linear(args.embed_dim, args.embed_dim, bias=False)
+
+        self.cache_k = torch.zeros(
+            (
+                args.max_batch_size,
+                args.max_seq_len,
+                args.n_heads*2,
+                self.head_dim
+            )
         )
-    )
 
-    self.cache_v = torch.zeros(
-        (
-            args.max_batch_size,
-            args.max_seq_len,
-            args.n_heads,
-            self.head_dim*2
+        self.cache_v = torch.zeros(
+            (
+                args.max_batch_size,
+                args.max_seq_len,
+                args.n_heads,
+                self.head_dim*2
+            )
         )
-    )
 
-    self.lambda_init = lambda_init_fn(self.depth)
-    self.lambda_q1 = nn.Parameter(torch.normal(mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32))
-    self.lambda_q2 = nn.Parameter(torch.normal(mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32))
-    self.lambda_k1 = nn.Parameter(torch.normal(mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32))
-    self.lambda_k2 = nn.Parameter(torch.normal(mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32))
+        self.lambda_init = lambda_init_fn(self.depth)
+        self.lambda_q1 = nn.Parameter(torch.normal(
+            mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32))
+        self.lambda_q2 = nn.Parameter(torch.normal(
+            mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32))
+        self.lambda_k1 = nn.Parameter(torch.normal(
+            mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32))
+        self.lambda_k2 = nn.Parameter(torch.normal(
+            mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32))
 
-    self.sublayer_norm = RMSNorm(2 * self.head_dim, eps=1e-5,)
-  
-  def forward(self,
-              x: torch.Tensor,
-              start_pos: int,
-              freqs_cis: torch.Tensor,
-              attn_mask: Optional[torch.Tensor]=None):
-    """
-    Forward pass of the differential attention module.
+        self.sublayer_norm = RMSNorm(2 * self.head_dim, eps=1e-5,)
 
-    Args:
-        x (torch.Tensor): Input tensor.
-        start_pos (int): Starting position for caching.
-        freqs_cis (torch.Tensor): Precomputed frequency tensor.
-        attn_mask (torch.Tensor, Optional): Attention mask tensor.
-    Returns:
-        torch.Tensor: Output tensor after attention
-    """
-    bsz, tgt_len, _ = x.shape
-    src_len = tgt_len
+    def forward(self,
+                x: torch.Tensor,
+                start_pos: int,
+                freqs_cis: torch.Tensor,
+                attn_mask: Optional[torch.Tensor] = None):
+        """
+        Forward pass of the differential attention module.
 
-    q = self.wq(x)
-    k = self.wk(x)
-    v = self.wv(x)
-    q = q.view(bsz, tgt_len, 2*self.num_heads, self.head_dim)
-    k = k.view(bsz, tgt_len, 2*self.num_heads, self.head_dim)
-    v = v.view(bsz, tgt_len, self.num_heads, 2*self.head_dim)
+        Args:
+            x (torch.Tensor): Input tensor.
+            start_pos (int): Starting position for caching.
+            freqs_cis (torch.Tensor): Precomputed frequency tensor.
+            attn_mask (torch.Tensor, Optional): Attention mask tensor.
+        Returns:
+            torch.Tensor: Output tensor after attention
+        """
+        bsz, tgt_len, _ = x.shape
+        src_len = tgt_len
 
-    q,k = apply_rotary_emb(q, k, freqs_cis)
+        q = self.wq(x)
+        k = self.wk(x)
+        v = self.wv(x)
+        q = q.view(bsz, tgt_len, 2*self.num_heads, self.head_dim)
+        k = k.view(bsz, tgt_len, 2*self.num_heads, self.head_dim)
+        v = v.view(bsz, tgt_len, self.num_heads, 2*self.head_dim)
 
-    self.cache_k = self.cache_k.to(k)
-    self.cache_v = self.cache_v.to(v)
+        q, k = apply_rotary_emb(q, k, freqs_cis)
 
-    self.cache_k[:bsz, start_pos : start_pos + src_len] = k
-    self.cache_v[:bsz, start_pos : start_pos + src_len] = v
+        self.cache_k = self.cache_k.to(k)
+        self.cache_v = self.cache_v.to(v)
 
-    keys = self.cache_k[:bsz, :start_pos + src_len]
-    values = self.cache_v[:bsz, :start_pos + src_len]
+        self.cache_k[:bsz, start_pos:start_pos + src_len] = k
+        self.cache_v[:bsz, start_pos:start_pos + src_len] = v
 
-    offset = src_len - tgt_len
-    q *= self.scaling
+        keys = self.cache_k[:bsz, :start_pos + src_len]
+        values = self.cache_v[:bsz, :start_pos + src_len]
 
-    q = q.transpose(1,2)
-    keys = keys.transpose(1,2)
-    values = values.transpose(1,2)
+        offset = src_len - tgt_len
+        q *= self.scaling
 
-    attn_scores = torch.matmul(q, keys.transpose(2,3))
-    if attn_mask is None:
-      attn_mask = torch.triu(
-          torch.zeros((tgt_len, tgt_len)
-          ).float()
-          .type_as(attn_scores),
-          diagonal= 1+offset
-      )
+        q = q.transpose(1, 2)
+        keys = keys.transpose(1, 2)
+        values = values.transpose(1, 2)
 
-    attn_scores = torch.nan_to_num(attn_scores)
-    attn_scores += attn_mask
-    attn_weights = F.softmax(attn_scores, dim=-1, dtype=torch.float32).type_as(
-        attn_scores
-    )
-    lambda_1 = torch.exp(
-        torch.sum(
-            self.lambda_q1 * self.lambda_k1, dim=-1).float()).type_as(q)
-    lambda_2 = torch.exp(
-        torch.sum(
-            self.lambda_q2 * self.lambda_k2, dim=-1).float()).type_as(q)
-    lambda_full = lambda_1 - lambda_2 + self.lambda_init
+        attn_scores = torch.matmul(q, keys.transpose(2, 3))
+        if attn_mask is None:
+            attn_mask = torch.triu(
+                torch.zeros((tgt_len, tgt_len)).float()
+                .type_as(attn_scores),
+                diagonal=1+offset
+            )
 
-    attn_weights = attn_weights.view(
-        bsz,
-        self.num_heads,
-        2, tgt_len, src_len)
-    attn_weights = attn_weights[:, :, 0] - lambda_full * attn_weights[:, :, 1]
+            attn_scores = torch.nan_to_num(attn_scores)
+            attn_scores += attn_mask
+        attn_weights = F.softmax(
+            attn_scores, dim=-1, dtype=torch.float32).type_as(
+            attn_scores
+        )
+        lambda_1 = torch.exp(
+            torch.sum(
+                self.lambda_q1 * self.lambda_k1, dim=-1).float()).type_as(q)
+        lambda_2 = torch.exp(
+            torch.sum(
+                self.lambda_q2 * self.lambda_k2, dim=-1).float()).type_as(q)
+        lambda_full = lambda_1 - lambda_2 + self.lambda_init
 
-    ctx_vec= torch.matmul(attn_weights, values)
-    ctx_vec = self.sublayer_norm(ctx_vec)
-    ctx_vec = ctx_vec.transpose(1,2).reshape(
-        bsz, tgt_len,
-        self.num_heads * 2 * self.head_dim)
-    ctx_vec = self.out_proj(ctx_vec)
+        attn_weights = attn_weights.view(
+            bsz,
+            self.num_heads,
+            2, tgt_len, src_len)
+        attn_weights = attn_weights[:, :, 0] - lambda_full * attn_weights[:, :, 1]
 
-    return ctx_vec
+        ctx_vec = torch.matmul(attn_weights, values)
+        ctx_vec = self.sublayer_norm(ctx_vec)
+        ctx_vec = ctx_vec.transpose(1, 2).reshape(
+            bsz, tgt_len,
+            self.num_heads * 2 * self.head_dim)
+        ctx_vec = self.out_proj(ctx_vec)
 
+        return ctx_vec
