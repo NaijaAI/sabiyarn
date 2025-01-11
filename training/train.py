@@ -28,17 +28,14 @@ import torch
 from transformers import AutoTokenizer
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
-from cut_cross_entropy import linear_cross_entropy
 from torch.nn import functional as F
 
 from sabiyarn.model import ModelArgs, SabiYarn, MoeArgs
 from sabiyarn.differential_attention import DiffAttnArgs
-from utils import *
+from .utils import *
 from constant_tokens import MASK
-from dotenv import load_dotenv
 from training_attention_mask import create_causal_mask
 import wandb
-import torch
 from torch.optim import SGD, Adam, AdamW
 from bitsandbytes import optim  # For Adam8bit if using the bitsandbytes library
 
@@ -48,7 +45,6 @@ LOG = structlog.stdlib.get_logger()
 # default config values designed to train a gpt2 (124M) on OpenWebText
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-load_dotenv()
 wandb_key = os.getenv('WANDB_API_KEY')
 hf_key = os.getenv('HF_WRITE_TOKEN')
 
@@ -67,10 +63,10 @@ init_from = 'scratch' # 'scratch' or 'resume'
 # wandb logging
 wandb_log = True  # disabled by default
 wandb_project = 'sabiyarn-ablations'
-wandb_run_name = 'ablation_1' # 'run' + str(time.time())
+wandb_run_name = 'ablation_1'  # 'run' + str(time.time())
 
 # data
-dataset = ''
+dataset = 'Aletheia-ng/wiki-yo'
 gradient_accumulation_steps = 5 * 8  # used to simulate larger batch sizes
 batch_size = train_batch_size  # if gradient_accumulation_steps > 1, this is the micro-batch size
 
@@ -120,13 +116,13 @@ compile = True   # use PyTorch 2.0 to compile the model to be faster
 
 
 # -----------------------------------------------------------------------------
-config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
+config_keys = [k for k, v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read())   # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys}
 # will be useful for logging
 
 wandb.init(
-    project= wandb_project,
+    project=wandb_project,
     config=config
 )
 # -----------------------------------------------------------------------------
@@ -153,7 +149,7 @@ else:
     master_process = True
     seed_offset = 0
     ddp_world_size = 1
-    
+
 tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
 print(f"tokens per iteration will be: {tokens_per_iter:,}")
 
@@ -371,9 +367,8 @@ def get_lr(it):
     return min_lr + coeff * (learning_rate - min_lr)
 
 
-def generate_and_decode_sequences(batch_token_ids, model, tokenizer, max_new_tokens=100):
-    import torch
-    
+def generate_and_decode_sequences(batch_token_ids, model, 
+                                  tokenizer, max_new_tokens=100):
     # Ensure the model is in evaluation mode
     model.eval()
     
@@ -386,8 +381,10 @@ def generate_and_decode_sequences(batch_token_ids, model, tokenizer, max_new_tok
         )
     
     # Decode the input and generated sequences
-    decoded_inputs = tokenizer.batch_decode(batch_token_ids, skip_special_tokens=True)
-    decoded_outputs = tokenizer.batch_decode(generated_sequences, skip_special_tokens=True)
+    decoded_inputs = tokenizer.batch_decode(batch_token_ids, 
+                                            skip_special_tokens=True)
+    decoded_outputs = tokenizer.batch_decode(generated_sequences, 
+                                             skip_special_tokens=True)
     
     # Print the input and corresponding generated sequence for each item in the batch
     for input_seq, output_seq in zip(decoded_inputs, decoded_outputs):
@@ -405,7 +402,7 @@ def generate_and_decode_sequences(batch_token_ids, model, tokenizer, max_new_tok
 def train():
     X, Y = get_batch('train') # fetch the very first batch
     t0 = time.time()
-    local_iter_num = 0 # number of iterations in the lifetime of this process
+    local_iter_num = 0  # number of iterations in the lifetime of this process
     raw_model = model.module if ddp else model # unwrap DDP container if needed
     running_mfu = -1.0
     while True:

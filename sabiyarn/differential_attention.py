@@ -11,7 +11,7 @@ from typing import Optional
 class DiffAttnArgs:
     depth: Optional[int] = None#will be determined in the model
     max_batch_size: int = 32
-    n_heads: int = 16 #half of the transformers num_head
+    n_heads: int = 32 #half of the transformers num_head
     embed_dim: int = 4096
     n_kv_heads: Optional[int] = None
     max_seq_len: int = 2048
