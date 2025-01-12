@@ -13,6 +13,7 @@ logger = getLogger()
 
 class Tokenizer:
     """tokenizing and encoding/decoding text using SentencePiece."""
+
     def __init__(self, model_path: str):
         """
         Initializes the Tokenizer with a SentencePiece model.
@@ -66,4 +67,3 @@ class Tokenizer:
             str: The decoded string.
         """
         return self.sp_model.decode(t)
-    

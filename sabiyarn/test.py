@@ -1,5 +1,8 @@
 import torch
-from fairscale.nn.model_parallel.initialize import initialize_model_parallel #, destroy_model_parallel
+from fairscale.nn.model_parallel.initialize import (
+    initialize_model_parallel,
+)  # , destroy_model_parallel
+
 # from fairscale.nn.model_parallel import mpu
 from model import *
 from tokenizer import *
@@ -9,19 +12,16 @@ from torch import nn
 # Initialize model parallelism if needed
 # initialize_model_parallel(1)  # Use 1 model parallel size for simplicity
 
+
 def test_attention():
     # Model configuration
     args = ModelArgs(
-        dim=4096,
-        n_heads=32,
-        n_kv_heads=None,
-        max_batch_size=2,
-        max_seq_len=128
+        dim=4096, n_heads=32, n_kv_heads=None, max_batch_size=2, max_seq_len=128
     )
-    
+
     # Initialize Attention Module
     attention = Attention(args).cuda()
-    
+
     # Dummy inputs for testing
     batch_size = 2
     seq_len = 128
@@ -35,7 +35,11 @@ def test_attention():
     print("Attention output shape:", output.shape)
 
     # Check output shape
-    assert output.shape == (batch_size, seq_len, args.dim), "Attention output shape is incorrect"
+    assert output.shape == (
+        batch_size,
+        seq_len,
+        args.dim,
+    ), "Attention output shape is incorrect"
 
     print("Attention module test passed!")
 
@@ -60,34 +64,40 @@ def test_feedforward():
     print("FeedForward output shape:", output.shape)
 
     # Check output shape
-    assert output.shape == (batch_size, seq_len, dim), "FeedForward output shape is incorrect"
+    assert output.shape == (
+        batch_size,
+        seq_len,
+        dim,
+    ), "FeedForward output shape is incorrect"
 
     print("FeedForward module test passed!")
+
 
 # Test function for the tokenizer
 def test_tokenizer():
     model_path = "path/to/your/sentencepiece.model"  # Replace with the actual path
     tokenizer = Tokenizer(model_path)
-    
+
     # Sample text
     sample_text = "Hello, world!"
     print("Original Text:", sample_text)
-    
+
     # Encode
     encoded = tokenizer.encode(sample_text, bos=True, eos=True)
     print("Encoded:", encoded)
-    
+
     # Decode
     decoded = tokenizer.decode(encoded)
     print("Decoded:", decoded)
 
     # Check that decode(encode(text)) == text
     assert decoded == sample_text, "Decoded text does not match the original text"
-    
+
     print("Tokenizer test passed!")
-    
+
 
 # Assuming ModelArgs, Transformer, Attention, and FeedForward modules are defined and imported.
+
 
 def build_and_test_transformer():
     # Model configuration
@@ -100,7 +110,7 @@ def build_and_test_transformer():
         max_batch_size=2,
         max_seq_len=128,
     )
-    
+
     # Initialize the Transformer model
     model = Transformer(args).cuda()
 
@@ -116,11 +126,15 @@ def build_and_test_transformer():
     print("Transformer output shape:", output.shape)
 
     # Check if output shape matches the expected shape
-    assert output.shape == (batch_size, seq_len, args.dim), "Transformer output shape is incorrect"
+    assert output.shape == (
+        batch_size,
+        seq_len,
+        args.dim,
+    ), "Transformer output shape is incorrect"
 
     print("Transformer model test passed!")
 
-    
+
 # Run tests
 if __name__ == "__main__":
     # Initialize model parallel (if needed)
@@ -131,30 +145,36 @@ if __name__ == "__main__":
     # test_tokenizer()
     # # Cleanup model parallel
     # destroy_model_parallel()
-    
+
     import os
     from datasets import load_dataset
     import sentencepiece as spm
     import json
 
     # Step 1: Load the dataset
-    dataset_name = "saheedniyi/nigeria_translation_data"  # Replace with your dataset name
+    dataset_name = (
+        "saheedniyi/nigeria_translation_data"  # Replace with your dataset name
+    )
     # subset = "wikitext-2-raw-v1"  # Replace with the subset if applicable
-    dataset = load_dataset(dataset_name) #, subset)
+    dataset = load_dataset(dataset_name)  # , subset)
 
     # Combine all text data into one file for tokenizer training
     output_text_file = "data.txt"
 
     # Save the dataset to a text file
     with open(output_text_file, "w", encoding="utf-8") as f:
-        for split in dataset.keys():  # Iterate over all splits (e.g., train, validation)
-            for entry in dataset[split]['translation']:
+        for (
+            split
+        ) in dataset.keys():  # Iterate over all splits (e.g., train, validation)
+            for entry in dataset[split]["translation"]:
                 # print(entry)
                 if type(entry) == dict:
                     # f.write(json.dumps(entry)) #
                     f.write("\n".join([v for k, v in entry.items() if v]))
                 else:
-                    f.write(entry["text"] + "\n")  # Replace "text" with the correct key for your dataset
+                    f.write(
+                        entry["text"] + "\n"
+                    )  # Replace "text" with the correct key for your dataset
 
     print(f"Training data saved to {output_text_file}")
 
@@ -187,4 +207,3 @@ if __name__ == "__main__":
     print(f"Original: {test_string}")
     print(f"Encoded: {encoded}")
     print(f"Decoded: {decoded}")
-

@@ -4,8 +4,9 @@
 import os
 from tqdm import tqdm
 import numpy as np
-#import tiktoken
-from datasets import load_dataset # huggingface datasets
+
+# import tiktoken
+from datasets import load_dataset  # huggingface datasets
 from omegaconf import OmegaConf
 from transformers import AutoTokenizer
 import json
@@ -22,57 +23,72 @@ num_proc = config["num_proc"]
 num_proc_load_dataset = num_proc
 
 
-if __name__ == '__main__':
-    
+if __name__ == "__main__":
+
     if os.path.exists("./data_struct.json"):
         with open("./data_struct.json", "r") as t:
             files = json.load(t)
     else:
-        print("The data_struct file does not exist. Loading files in the download order...")
+        print(
+            "The data_struct file does not exist. Loading files in the download order..."
+        )
         files = "*"
     # takes 54GB in huggingface .cache dir, about 8M documents (8,013,769)
-    dataset = load_dataset(config["dataset"], files=files, num_proc=num_proc_load_dataset, split="train")
+    dataset = load_dataset(
+        config["dataset"], files=files, num_proc=num_proc_load_dataset, split="train"
+    )
 
     # owt by default only contains the 'train' split, so create a test split
-    split_dataset = dataset["train"].train_test_split(test_size=config["test_size"], seed=2357, shuffle=True)
-    split_dataset['val'] = split_dataset.pop('test') # rename the test split to val
-
+    split_dataset = dataset["train"].train_test_split(
+        test_size=config["test_size"], seed=2357, shuffle=True
+    )
+    split_dataset["val"] = split_dataset.pop("test")  # rename the test split to val
 
     # we now want to tokenize the dataset. first define the encoding function (gpt2 bpe)
-    enc = AutoTokenizer.from_pretrained(config["tokenizer_name"]) #tiktoken.get_encoding("gpt2")
-    
+    enc = AutoTokenizer.from_pretrained(
+        config["tokenizer_name"]
+    )  # tiktoken.get_encoding("gpt2")
+
     def process(example):
-        ids = enc.encode(example['text']) # encode_ordinary ignores any special tokens   encode_ordinary
-        ids.append(end_of_text_token) # add the end of text token, e.g. 50256 for gpt2 bpe
+        ids = enc.encode(
+            example["text"]
+        )  # encode_ordinary ignores any special tokens   encode_ordinary
+        ids.append(
+            end_of_text_token
+        )  # add the end of text token, e.g. 50256 for gpt2 bpe
         # note: I think eot should be prepended not appended... hmm. it's called "eot" though...
-        out = {'ids': ids, 'len': len(ids)}
+        out = {"ids": ids, "len": len(ids)}
         return out
 
     # tokenize the dataset
     tokenized = split_dataset.map(
         process,
-        remove_columns=['text'],
+        remove_columns=["text"],
         desc="tokenizing the splits",
         num_proc=num_proc,
     )
 
     # concatenate all the ids in each dataset into one large file we can use for training
     for split, dset in tokenized.items():
-        arr_len = np.sum(dset['len'], dtype=np.uint64)
-        if split.lower() == 'train':
-            filename = config["train_data_path"] #os.path.join(os.path.dirname(__file__), f'{split}.bin')
+        arr_len = np.sum(dset["len"], dtype=np.uint64)
+        if split.lower() == "train":
+            filename = config[
+                "train_data_path"
+            ]  # os.path.join(os.path.dirname(__file__), f'{split}.bin')
         else:
             filename = config["eval_data_path"]
-            
-        dtype = np.uint16 # (can do since enc.max_token_value == 50256 is < 2**16)
-        arr = np.memmap(filename, dtype=dtype, mode='w+', shape=(arr_len,))
+
+        dtype = np.uint16  # (can do since enc.max_token_value == 50256 is < 2**16)
+        arr = np.memmap(filename, dtype=dtype, mode="w+", shape=(arr_len,))
         total_batches = 1024
 
         idx = 0
-        for batch_idx in tqdm(range(total_batches), desc=f'writing {filename}'):
+        for batch_idx in tqdm(range(total_batches), desc=f"writing {filename}"):
             # Batch together samples for faster write
-            batch = dset.shard(num_shards=total_batches, index=batch_idx, contiguous=True).with_format('numpy')
-            arr_batch = np.concatenate(batch['ids'])
+            batch = dset.shard(
+                num_shards=total_batches, index=batch_idx, contiguous=True
+            ).with_format("numpy")
+            arr_batch = np.concatenate(batch["ids"])
             # Write into mmap
             arr[idx : idx + len(arr_batch)] = arr_batch
             idx += len(arr_batch)

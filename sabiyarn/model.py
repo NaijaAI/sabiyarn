@@ -13,12 +13,14 @@ from fairscale.nn.model_parallel.layers import (
     ParallelEmbedding,
     RowParallelLinear,
 )
+
 from torch import nn
 
-from moe import MoeLayer, MoeArgs
+from .moe import MoeLayer, MoeArgs
 from typing import Optional
-from memory_reasoning import LogicNetwork
-from differential_attention import DiffAttention, DiffAttnArgs
+from .memory_reasoning import LogicNetwork
+from .differential_attention import DiffAttention, DiffAttnArgs
+
 
 @dataclass
 class ModelArgs:
@@ -36,7 +38,6 @@ class ModelArgs:
     max_seq_len: int = 2048
     use_j: bool = True
     diff_args: Optional[DiffAttnArgs] = None
-
 
 
 class RMSNorm(torch.nn.Module):
@@ -101,8 +102,8 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     Returns:
         torch.Tensor: Precomputed frequency tensor with complex exponentials.
 
-    
-        
+
+
 
     """
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
@@ -158,7 +159,7 @@ def apply_rotary_emb(
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: Tuple of modified query tensor and key tensor with rotary embeddings.
 
-        
+
 
     """
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
@@ -183,6 +184,7 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
 
 class Attention(nn.Module):
     """Multi-head attention module."""
+
     def __init__(self, args: ModelArgs):
         """
         Initialize the Attention module.
@@ -297,12 +299,18 @@ class Attention(nn.Module):
         values = self.cache_v[:bsz, : start_pos + seqlen]
 
         # repeat k/v heads if n_kv_heads < n_heads
-        keys = repeat_kv(keys, self.n_rep)  # (bs, cache_len + seqlen, n_local_heads, head_dim)
-        values = repeat_kv(values, self.n_rep)  # (bs, cache_len + seqlen, n_local_heads, head_dim)
+        keys = repeat_kv(
+            keys, self.n_rep
+        )  # (bs, cache_len + seqlen, n_local_heads, head_dim)
+        values = repeat_kv(
+            values, self.n_rep
+        )  # (bs, cache_len + seqlen, n_local_heads, head_dim)
 
         xq = xq.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
-        keys = keys.transpose(1, 2) # (bs, n_local_heads, cache_len + seqlen, head_dim)
-        values = values.transpose(1, 2) # (bs, n_local_heads, cache_len + seqlen, head_dim)
+        keys = keys.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
+        values = values.transpose(
+            1, 2
+        )  # (bs, n_local_heads, cache_len + seqlen, head_dim)
         scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
         if mask is not None:
             scores = scores + mask  # (bs, n_local_heads, seqlen, cache_len + seqlen)
@@ -357,7 +365,9 @@ class FeedForward(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, layer_id: int, args: ModelArgs, diff_args: Optional[DiffAttnArgs] = None):
+    def __init__(
+        self, layer_id: int, args: ModelArgs, diff_args: Optional[DiffAttnArgs] = None
+    ):
         """
         Initialize a TransformerBlock.
 
@@ -382,19 +392,22 @@ class TransformerBlock(nn.Module):
         self.head_dim = args.dim // args.n_heads
         self.layer_id = layer_id
         if args.diff_args is not None:
-            diff_args = args.diff_args()
+            diff_args = args.diff_args
             diff_args.depth = self.layer_id
-            self.attention = DiffAttention(args.diff_args)
+            self.attention = DiffAttention(diff_args)
         else:
-            self.attention = Attention(args)  
+            self.attention = Attention(args)
         if args.moe is not None:
             self.feed_forward = MoeLayer(
-                experts=[FeedForward(
-                    dim=args.dim,
-                    hidden_dim=4 * args.dim,
-                    multiple_of=args.multiple_of,
-                    ffn_dim_multiplier=args.ffn_dim_multiplier,
-                    ) for _ in range(args.moe.num_experts)],
+                experts=[
+                    FeedForward(
+                        dim=args.dim,
+                        hidden_dim=4 * args.dim,
+                        multiple_of=args.multiple_of,
+                        ffn_dim_multiplier=args.ffn_dim_multiplier,
+                    )
+                    for _ in range(args.moe.num_experts)
+                ],
                 gate=nn.Linear(args.dim, args.moe.num_experts, bias=False),
                 moe_args=args.moe,
             )
@@ -405,13 +418,13 @@ class TransformerBlock(nn.Module):
                 multiple_of=args.multiple_of,
                 ffn_dim_multiplier=args.ffn_dim_multiplier,
             )
-            
+
         if args.logic_network is not None:
             self.logic_gate = LogicNetwork(args.dim)
             self.logic_network = True
         else:
             self.logic_network = False
-            
+
         self.layer_id = layer_id
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
@@ -436,14 +449,13 @@ class TransformerBlock(nn.Module):
             torch.Tensor: Output tensor after applying attention and feedforward layers.
 
         """
-        h = x + self.attention(
-            self.attention_norm(x), start_pos, freqs_cis, mask
-        )
+        h = x + self.attention(self.attention_norm(x), start_pos, freqs_cis, mask)
         if self.logic_network:
             h *= self.logic_gate(h)
-            
+
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
+
 
 class TransformerBlockJ(nn.Module):
     def __init__(self, layer_id: int, args: ModelArgs):
@@ -471,38 +483,41 @@ class TransformerBlockJ(nn.Module):
         self.head_dim = args.dim // args.n_heads
         self.layer_id = layer_id
         if args.diff_args is not None:
-            diff_args = args.diff_args()
+            diff_args = args.diff_args
             diff_args.depth = self.layer_id
             self.attention = DiffAttention(args.diff_args)
         else:
-            self.attention = Attention(args)            
+            self.attention = Attention(args)
         self.linear_j = nn.Linear(args.dim, args.dim)
         self.feed_forward: nn.Module
         if args.moe is not None:
             self.feed_forward = MoeLayer(
-                experts=[FeedForward(
-                    dim=args.dim,
-                    hidden_dim=4 * args.dim,
-                    multiple_of=args.multiple_of,
-                    ffn_dim_multiplier=args.ffn_dim_multiplier,
-                    ) for _ in range(args.moe.num_experts)],
+                experts=[
+                    FeedForward(
+                        dim=args.dim,
+                        hidden_dim=4 * args.dim,
+                        multiple_of=args.multiple_of,
+                        ffn_dim_multiplier=args.ffn_dim_multiplier,
+                    )
+                    for _ in range(args.moe.num_experts)
+                ],
                 gate=nn.Linear(args.dim, args.moe.num_experts, bias=False),
                 moe_args=args.moe,
             )
-        else:             
+        else:
             self.feed_forward = FeedForward(
                 dim=args.dim,
                 hidden_dim=4 * args.dim,
                 multiple_of=args.multiple_of,
                 ffn_dim_multiplier=args.ffn_dim_multiplier,
             )
-        
+
         if args.logic_network is not None:
             self.logic_gate = LogicNetwork(args.dim)
             self.logic_network = True
         else:
             self.logic_network = False
-            
+
         self.layer_id = layer_id
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
@@ -528,15 +543,18 @@ class TransformerBlockJ(nn.Module):
 
         """
         x_norm = self.attention_norm(x)
-        h = x + self.attention(
-            x_norm, start_pos, freqs_cis, mask
-        ) + self.linear_j(x_norm)
-        
+        h = (
+            x
+            + self.attention(x_norm, start_pos, freqs_cis, mask)
+            + self.linear_j(x_norm)
+        )
+
         if self.logic_network:
             h *= self.logic_gate(h)
-            
+
         out = h + self.feed_forward(self.ffn_norm(h))
         return out
+
 
 class SabiYarn(nn.Module):
     def __init__(self, params: ModelArgs, diff_attn_args: DiffAttnArgs = None):
@@ -564,7 +582,8 @@ class SabiYarn(nn.Module):
         self.n_layers = params.n_layers
 
         self.tok_embeddings = nn.Embedding(
-            params.vocab_size, params.dim,
+            params.vocab_size,
+            params.dim,
         )
 
         self.layers = torch.nn.ModuleList()
@@ -577,14 +596,17 @@ class SabiYarn(nn.Module):
 
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.lm_head = nn.Linear(
-            params.dim, params.vocab_size, bias=False,
+            params.dim,
+            params.vocab_size,
+            bias=False,
         )
         if params.attention_type == "self_attention":
-          self.freqs_cis = precompute_freqs_cis(
-            # Note that self.params.max_seq_len is multiplied by 2 because the token limit for the Llama 2 generation of models is 4096.
-            # Adding this multiplier instead of using 4096 directly allows for dynamism of token lengths while training or fine-tuning.
-            self.params.dim // self.params.n_heads, self.params.max_seq_len * 2
-        )
+            self.freqs_cis = precompute_freqs_cis(
+                # Note that self.params.max_seq_len is multiplied by 2 because the token limit for the Llama 2 generation of models is 4096.
+                # Adding this multiplier instead of using 4096 directly allows for dynamism of token lengths while training or fine-tuning.
+                self.params.dim // self.params.n_heads,
+                self.params.max_seq_len * 2,
+            )
         elif params.attention_type == "differential_attention":
             self.freqs_cis = precompute_freqs_cis(
                 # Note that self.params.max_seq_len is multiplied by 2
@@ -593,7 +615,10 @@ class SabiYarn(nn.Module):
                 # for dynamism of token lengths while training or fine-tuning.
                 # differential attention uses half the head_dim for key and
                 # query vectors
-                diff_attn_args.embed_dim // diff_attn_args.n_heads // 2, self.params.max_seq_len * 2
+                self.params.diff_attn_args.embed_dim
+                // self.params.diff_attn_args.n_heads
+                // 2,
+                self.params.max_seq_len * 2,
             )
 
     def forward(self, tokens: torch.Tensor, start_pos: int, mask=None):
@@ -615,9 +640,7 @@ class SabiYarn(nn.Module):
 
         if mask == None:
             if seqlen > 1:
-                mask = torch.full(
-                    (seqlen, seqlen), float("-inf"), device=tokens.device
-                )
+                mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
 
                 mask = torch.triu(mask, diagonal=1)
 
@@ -625,10 +648,9 @@ class SabiYarn(nn.Module):
                 # only for the new sequence. Thus, the matrix of scores is of size
                 # (seqlen, cache_len + seqlen), and the only masked entries are (i, j) for
                 # j > cache_len + i, since row i corresponds to token cache_len + i.
-                mask = torch.hstack([
-                    torch.zeros((seqlen, start_pos), device=tokens.device),
-                    mask
-                ]).type_as(h)
+                mask = torch.hstack(
+                    [torch.zeros((seqlen, start_pos), device=tokens.device), mask]
+                ).type_as(h)
 
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)

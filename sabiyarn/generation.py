@@ -16,8 +16,8 @@ from fairscale.nn.model_parallel.initialize import (
     model_parallel_is_initialized,
 )
 
-from llama.model import ModelArgs, Transformer
-from llama.tokenizer import Tokenizer
+from .model import ModelArgs, SabiYarn
+from .tokenizer import Tokenizer
 
 Role = Literal["system", "user", "assistant"]
 
@@ -116,13 +116,13 @@ class Llama:
         tokenizer = Tokenizer(model_path=tokenizer_path)
         model_args.vocab_size = tokenizer.n_words
         torch.set_default_tensor_type(torch.cuda.HalfTensor)
-        model = Transformer(model_args)
+        model = SabiYarn(model_args)
         model.load_state_dict(checkpoint, strict=False)
         print(f"Loaded in {time.time() - start_time:.2f} seconds")
 
         return Llama(model, tokenizer)
 
-    def __init__(self, model: Transformer, tokenizer: Tokenizer):
+    def __init__(self, model: SabiYarn, tokenizer: Tokenizer):
         self.model = model
         self.tokenizer = tokenizer
 
@@ -373,9 +373,9 @@ class Llama:
                 {
                     "generation": {
                         "role": "assistant",
-                        "content": self.tokenizer.decode(t)
-                        if not unsafe
-                        else UNSAFE_ERROR,
+                        "content": (
+                            self.tokenizer.decode(t) if not unsafe else UNSAFE_ERROR
+                        ),
                     },
                     "tokens": [self.tokenizer.decode(x) for x in t],
                     "logprobs": logprobs_i,

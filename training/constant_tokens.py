@@ -1,3 +1,4 @@
+from transformers import AutoTokenizer
 lang_id_token = 26290
 lang_id_label_token = 102
 classify_token = 42303
@@ -25,7 +26,7 @@ hau = 13679
 pcm = 28112
 prompt = 37160
 response = 2474
-from transformers import AutoTokenizer
+MASK = -100
 
 # from omegaconf import OmegaConf
 
