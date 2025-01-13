@@ -37,7 +37,8 @@ class ModelArgs:
     max_batch_size: int = 32
     max_seq_len: int = 2048
     use_j: bool = True
-    diff_args: Optional[DiffAttnArgs] = None
+    attention_type = "differential_attention"
+    diff_attn_args: Optional[DiffAttnArgs] = None
 
 
 class RMSNorm(torch.nn.Module):
@@ -201,7 +202,7 @@ class Attention(nn.Module):
             wq (ColumnParallelLinear): Linear transformation for queries.
             wk (ColumnParallelLinear): Linear transformation for keys.
             wv (ColumnParallelLinear): Linear transformation for values.
-            wo (RowParallelLinear): Linear transformation for output.
+            wo (nn.Linear): Linear transformation for output.
             cache_k (torch.Tensor): Cached keys for attention.
             cache_v (torch.Tensor): Cached values for attention.
 
@@ -235,7 +236,7 @@ class Attention(nn.Module):
             gather_output=False,
             init_method=lambda x: x,
         )
-        self.wo = RowParallelLinear(
+        self.wo = nn.Linear(
             args.n_heads * self.head_dim,
             args.dim,
             bias=False,
@@ -339,7 +340,7 @@ class FeedForward(nn.Module):
 
         Attributes:
             w1 (ColumnParallelLinear): Linear transformation for the first layer.
-            w2 (RowParallelLinear): Linear transformation for the second layer.
+            w2 (nn.Linear): Linear transformation for the second layer.
             w3 (ColumnParallelLinear): Linear transformation for the third layer.
 
         """
@@ -350,14 +351,14 @@ class FeedForward(nn.Module):
             hidden_dim = int(ffn_dim_multiplier * hidden_dim)
         hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
 
-        self.w1 = ColumnParallelLinear(
-            dim, hidden_dim, bias=False, gather_output=False, init_method=lambda x: x
+        self.w1 = nn.Linear(
+            dim, hidden_dim, bias=False,
         )
-        self.w2 = RowParallelLinear(
-            hidden_dim, dim, bias=False, input_is_parallel=True, init_method=lambda x: x
+        self.w2 = nn.Linear(
+            hidden_dim, dim, bias=False,
         )
-        self.w3 = ColumnParallelLinear(
-            dim, hidden_dim, bias=False, gather_output=False, init_method=lambda x: x
+        self.w3 = nn.Linear(
+            dim, hidden_dim, bias=False,
         )
 
     def forward(self, x):
@@ -366,7 +367,7 @@ class FeedForward(nn.Module):
 
 class TransformerBlock(nn.Module):
     def __init__(
-        self, layer_id: int, args: ModelArgs, diff_args: Optional[DiffAttnArgs] = None
+        self, layer_id: int, args: ModelArgs, diff_attn_args: Optional[DiffAttnArgs] = None
     ):
         """
         Initialize a TransformerBlock.
@@ -391,10 +392,10 @@ class TransformerBlock(nn.Module):
         self.dim = args.dim
         self.head_dim = args.dim // args.n_heads
         self.layer_id = layer_id
-        if args.diff_args is not None:
-            diff_args = args.diff_args
-            diff_args.depth = self.layer_id
-            self.attention = DiffAttention(diff_args)
+        if args.diff_attn_args is not None:
+            diff_attn_args = args.diff_attn_args
+            diff_attn_args.depth = self.layer_id
+            self.attention = DiffAttention(diff_attn_args)
         else:
             self.attention = Attention(args)
         if args.moe is not None:
@@ -482,10 +483,10 @@ class TransformerBlockJ(nn.Module):
         self.dim = args.dim
         self.head_dim = args.dim // args.n_heads
         self.layer_id = layer_id
-        if args.diff_args is not None:
-            diff_args = args.diff_args
-            diff_args.depth = self.layer_id
-            self.attention = DiffAttention(args.diff_args)
+        if args.diff_attn_args is not None:
+            diff_attn_args = args.diff_attn_args
+            diff_attn_args.depth = self.layer_id
+            self.attention = DiffAttention(args.diff_attn_args)
         else:
             self.attention = Attention(args)
         self.linear_j = nn.Linear(args.dim, args.dim)

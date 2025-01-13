@@ -30,6 +30,7 @@ initializer_range: 0.02
 rms_norm_eps: 1e-6
 tie_word_embeddings: false
 attention_dropout: 0.0
+block_size: 4096
 
 
 # dataset

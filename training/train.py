@@ -50,8 +50,8 @@ hf_key = os.getenv("HF_WRITE_TOKEN")
 
 # I/O
 train_batch_size = 10
-train_data_path = "../train.bin"
-eval_data_path = "../val.bin"
+train_data_path = "./train.bin"
+eval_data_path = "./val.bin"
 out_dir = "out"
 eval_interval = 2000
 log_interval = 100
@@ -87,13 +87,13 @@ use_moe = False
 moe=None
 use_differential_attention = True
 logic_network = False
-max_batch_size = 32
+max_batch_size = 16
 max_seq_len = 2048
 use_j = True
 display_model_output_iter = 768
 num_experts = 4
 num_experts_per_tok = 2
-
+block_size = 2048
 # adamw optimizer
 optimizer = "adam"
 learning_rate = 6e-4  # max learning rate
@@ -112,14 +112,14 @@ min_lr = 6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinch
 # DDP settings
 os.environ["MASTER_ADDR"] = "127.0.0.1"
 os.environ["MASTER_PORT"] = "29500"
-backend = "nccl"  # 'nccl', 'gloo', etc.
+rank = 0
+world_size = torch.cuda.device_count()
+backend = "nccl"
 
 
 
 # system
-device = (
-    "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
-)
+device = "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
 dtype = (
     "bfloat16"
     if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
@@ -143,11 +143,14 @@ config = {k: globals()[k] for k in config_keys}
 block_size = max_seq_len
 tokenizer = AutoTokenizer.from_pretrained("BeardedMonster/SabiYarn-125M")
 # various inits, derived attributes, I/O setup
-ddp = True
+ddp = False
 if ddp:
-    dist.init_process_group(backend=backend)
-    world_size = torch.cuda.device_count()
-    rank = dist.get_rank()
+    dist.init_process_group(backend=backend,
+                            rank=rank,
+                            init_method="env://",
+                            world_size=world_size
+                            )
+    LOG.info("distributed processing initialized successfully....")
     torch.cuda.set_device(rank)
     device = torch.device('cuda', rank)
     master_process = rank == 0  # this process will do logging, checkpointing etc.
@@ -238,11 +241,13 @@ def configure_optimizer(
     betas=(0.9, 0.999),
 ):
     if optimizer_type == "sgd":
-        optimizer = SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        optimizer = SGD(model.parameters(), lr=learning_rate, 
+                        weight_decay=weight_decay)
 
     elif optimizer_type == "adam":
         optimizer = Adam(
-            model.parameters(), lr=learning_rate, betas=betas, weight_decay=weight_decay
+            model.parameters(), lr=learning_rate, betas=betas, 
+            weight_decay=weight_decay
         )
 
     elif optimizer_type == "adamw":
@@ -385,7 +390,8 @@ model.to(device)
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == dtype))
 
 # optimizer
-model = configure_optimizer(model, optimizer, weight_decay, betas=(beta1, beta2))
+optimizer = configure_optimizer(model, optimizer, weight_decay, 
+                                betas=(beta1, beta2))
 
 if init_from == "resume":
     optimizer.load_state_dict(checkpoint["optimizer"])
@@ -397,7 +403,7 @@ if compile:
     print("compiling the model... (takes a ~minute)")
     unoptimized_model = model
     model = torch.compile(model)  # requires PyTorch 2.0
-
+ddp_local_rank = rank
 # wrap model into DDP container
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
@@ -429,10 +435,10 @@ def estimate_loss():
             with ctx:
                 attn_mask = _prepare_mask_(b, block_size=config["block_size"])
                 attn_mask = torch.where(
-                    create_causal_mask(X, attn_mask) == 0, False, True
+                    create_causal_mask(X, attn_mask.to('cuda')) == 0, False, True
                 )
                 attn_mask.to(device)
-                _, logits = model(tokens=X, mask=attn_mask)
+                _, logits = model(tokens=X, mask=attn_mask, start_pos=0)
                 loss = F.cross_entropy(
                     logits.view(-1, logits.size(-1)), Y.view(-1), ignore_index=-100
                 )
@@ -492,6 +498,9 @@ def generate_and_decode_sequences(
 def train():
     X, Y = get_batch("train")  # fetch the very first batch
     t0 = time.time()
+    global iter_num
+    global best_val_loss
+
     local_iter_num = 0  # number of iterations in the lifetime of this process
     raw_model = model.module if ddp else model  # unwrap DDP container if needed
     running_mfu = -1.0
@@ -554,9 +563,9 @@ def train():
                 attn_mask = torch.where(
                     create_causal_mask(X, attn_mask) == 0, False, True
                 )
-                attn_mask.to(device)
+                attn_mask.to("cuda")
                 # print("Attention mask: ", attn_mask)
-                _, logits = model(tokens=X, mask=attn_mask)
+                _, logits = model(tokens=X, mask=attn_mask, start_pos=0)
                 loss = F.cross_entropy(
                     logits.view(-1, logits.size(-1)), Y.view(-1), ignore_index=-100
                 )

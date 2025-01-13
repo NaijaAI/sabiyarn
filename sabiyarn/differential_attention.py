@@ -277,11 +277,12 @@ class DiffAttention(nn.Module):
             attn_mask = torch.triu(
                 torch.zeros((tgt_len, tgt_len)).float().type_as(attn_scores),
                 diagonal=1 + offset,
-            )
+            ).to("cuda")
 
         attn_scores = torch.nan_to_num(attn_scores)
-        attn_scores += attn_mask
-        attn_weights = F.softmax(attn_scores, dim=-1, dtype=torch.float32).type_as(
+        attn_scores += attn_mask.to("cuda")
+        attn_weights = F.softmax(attn_scores,
+                                 dim=-1, dtype=torch.float32).type_as(
             attn_scores
         )
         lambda_1 = torch.exp(
@@ -292,7 +293,8 @@ class DiffAttention(nn.Module):
         ).type_as(q)
         lambda_full = lambda_1 - lambda_2 + self.lambda_init
 
-        attn_weights = attn_weights.view(bsz, self.num_heads, 2, tgt_len, src_len)
+        attn_weights = attn_weights.view(bsz, self.num_heads,
+                                         2, tgt_len, src_len)
         attn_weights = attn_weights[:, :, 0] - lambda_full * attn_weights[:, :, 1]
 
         ctx_vec = torch.matmul(attn_weights, values)

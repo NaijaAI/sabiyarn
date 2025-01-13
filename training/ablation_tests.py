@@ -21,7 +21,8 @@ VOL_MOUNT_PATH = Path("/vol")
 stub = App(name="sabiyarn-ablation-tests", image=sabiyarn)
 output_vol = Volume.from_name("sabiyarn_v2", create_if_missing=True)
 
-restart_tracker_dict = modal.Dict.from_name("sabiyarn-ablation", create_if_missing=True)
+restart_tracker_dict = modal.Dict.from_name("sabiyarn-ablation",
+                                            create_if_missing=True)
 
 
 def track_restarts(restart_tracker: modal.Dict) -> int:
@@ -38,18 +39,21 @@ def track_restarts(restart_tracker: modal.Dict) -> int:
 
 def prepare_train():
     from ..data import prepare
+    import torch
+
+    print(f" there are {torch.cuda.device_count()} gpus available")
 
     prepare.run()
 
 
-def train():
-    import train
+def run_train():
+    from ..training import train
     LOG.info("starting training runs")
     train.train()
 
 
 @stub.function(
-    gpu=modal.gpu.A10G(count=2),
+    gpu=modal.gpu.L40S(),
     timeout=60 * 60 * 4,
     cpu=8.0,
     secrets=[Secret.from_name("wandb-api"), Secret.from_name("hf-secret")],
@@ -58,4 +62,4 @@ def train():
 def run():
     LOG.info("modal instance running..")
     prepare_train()
-    train()
+    run_train()
