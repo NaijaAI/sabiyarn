@@ -88,12 +88,11 @@ moe=None
 use_differential_attention = True
 logic_network = False
 max_batch_size = 16
-max_seq_len = 2048
+max_seq_len = 1024
 use_j = True
 display_model_output_iter = 768
 num_experts = 4
 num_experts_per_tok = 2
-block_size = 2048
 # adamw optimizer
 optimizer = "adam"
 learning_rate = 6e-4  # max learning rate
@@ -327,6 +326,7 @@ if init_from == "scratch":
     )
 
     model = SabiYarn(model_args)
+    LOG.info(f"{model.get_model_size()}")
 
 elif init_from == "resume":
     print(f"Resuming training from {out_dir}")
@@ -434,9 +434,7 @@ def estimate_loss():
             b = len(X)
             with ctx:
                 attn_mask = _prepare_mask_(b, block_size=config["block_size"])
-                attn_mask = torch.where(
-                    create_causal_mask(X, attn_mask.to('cuda')) == 0, False, True
-                )
+                attn_mask = create_causal_mask(X, attn_mask.to('cuda'))
                 attn_mask.to(device)
                 _, logits = model(tokens=X, mask=attn_mask, start_pos=0)
                 loss = F.cross_entropy(
@@ -560,9 +558,7 @@ def train():
             with ctx:
                 b = len(X)
                 attn_mask = _prepare_mask_(b, block_size=config["block_size"])
-                attn_mask = torch.where(
-                    create_causal_mask(X, attn_mask) == 0, False, True
-                )
+                attn_mask = create_causal_mask(X, attn_mask)
                 attn_mask.to("cuda")
                 # print("Attention mask: ", attn_mask)
                 _, logits = model(tokens=X, mask=attn_mask, start_pos=0)

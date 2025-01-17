@@ -209,16 +209,20 @@ class DiffAttention(nn.Module):
 
         self.lambda_init = lambda_init_fn(self.depth)
         self.lambda_q1 = nn.Parameter(
-            torch.normal(mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32)
+            torch.normal(mean=0, std=0.1, size=(self.head_dim,), 
+                         dtype=torch.float32)
         )
         self.lambda_q2 = nn.Parameter(
-            torch.normal(mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32)
+            torch.normal(mean=0, std=0.1, size=(self.head_dim,), 
+                         dtype=torch.float32)
         )
         self.lambda_k1 = nn.Parameter(
-            torch.normal(mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32)
+            torch.normal(mean=0, std=0.1, size=(self.head_dim,), 
+                         dtype=torch.float32)
         )
         self.lambda_k2 = nn.Parameter(
-            torch.normal(mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32)
+            torch.normal(mean=0, std=0.1, size=(self.head_dim,), 
+                         dtype=torch.float32)
         )
 
         self.sublayer_norm = RMSNorm(

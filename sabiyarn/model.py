@@ -621,7 +621,12 @@ class SabiYarn(nn.Module):
                 // 2,
                 self.params.max_seq_len * 2,
             )
-
+    
+    def get_model_size(self):
+        # Calculate number of trainable parameters
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        return f"Trainable parameters: {trainable_params//1e6}M"
+    
     def forward(self, tokens: torch.Tensor, start_pos: int, mask=None):
         """
         Perform a forward pass through the Transformer model.

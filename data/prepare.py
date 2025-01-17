@@ -70,8 +70,8 @@ def run():
         ids = enc.encode(
             example["text_yor"]
         )  # encode_ordinary ignores any special tokens   encode_ordinary
-        ids.append(
-            end_of_text_token
+        ids.extend(
+            [end_of_text_token, end_of_text_token]
         )  # add the end of text token, e.g. 50256 for gpt2 bpe
         # note: I think eot should be prepended not appended... hmm. it's called "eot" though...
         out = {"ids": ids, "len": len(ids)}
