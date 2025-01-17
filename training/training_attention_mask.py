@@ -73,6 +73,7 @@ def create_causal_mask(tensor, original_mask, id_val=30, min_value=-1e-25):
         return original_mask
 
 
+
 if __name__ == "__main__":
     import torch
 
