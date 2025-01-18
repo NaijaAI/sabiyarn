@@ -85,10 +85,11 @@ ffn_dim_multiplier = None
 norm_eps = 1e-5
 use_moe = False
 moe=None
-use_differential_attention = True
+use_differential_attention = False
 logic_network = False
-max_batch_size = 16
+max_batch_size = 4
 max_seq_len = 1024
+block_size = max_seq_len
 use_j = True
 display_model_output_iter = 768
 num_experts = 4
@@ -139,8 +140,7 @@ config = {k: globals()[k] for k in config_keys}
 
 # -----------------------------------------------------------------------------
 
-block_size = max_seq_len
-tokenizer = AutoTokenizer.from_pretrained("BeardedMonster/SabiYarn-125M")
+tokenizer = AutoTokenizer.from_pretrained("Aletheia-ng/SabiYarn-125M")
 # various inits, derived attributes, I/O setup
 ddp = False
 if ddp:
@@ -199,7 +199,7 @@ def get_batch(split, verbose=False):
     # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
     if split == "train":
         data = np.memmap(train_data_path, dtype=np.uint16, mode="r")
-    else:
+    else: 
         data = np.memmap(eval_data_path, dtype=np.uint16, mode="r")
     ix = torch.randint(len(data) - block_size, (train_batch_size,))
     x = [torch.from_numpy((data[i : i + block_size]).astype(np.int64)) for i in ix]
@@ -433,12 +433,13 @@ def estimate_loss():
             X, Y = get_batch(split)
             b = len(X)
             with ctx:
-                attn_mask = _prepare_mask_(b, block_size=config["block_size"])
+                attn_mask = _prepare_mask_(b, block_size=block_size)
                 attn_mask = create_causal_mask(X, attn_mask.to('cuda'))
                 attn_mask.to(device)
                 _, logits = model(tokens=X, mask=attn_mask, start_pos=0)
                 loss = F.cross_entropy(
-                    logits.view(-1, logits.size(-1)), Y.view(-1), ignore_index=-100
+                    logits.view(-1, logits.size(-1)), Y.view(-1),
+                    ignore_index=-100
                 )
             losses[k] = loss.item()
         out[split] = losses.mean()

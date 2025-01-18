@@ -263,18 +263,18 @@ class DiffAttention(nn.Module):
         self.cache_k = self.cache_k.to(k)
         self.cache_v = self.cache_v.to(v)
 
-        self.cache_k[:bsz, start_pos : start_pos + src_len] = k
-        self.cache_v[:bsz, start_pos : start_pos + src_len] = v
+        # self.cache_k[:bsz, start_pos : start_pos + src_len] = k
+        # self.cache_v[:bsz, start_pos : start_pos + src_len] = v
 
-        keys = self.cache_k[:bsz, : start_pos + src_len]
-        values = self.cache_v[:bsz, : start_pos + src_len]
+        # keys = self.cache_k[:bsz, : start_pos + src_len]
+        # values = self.cache_v[:bsz, : start_pos + src_len]
 
         offset = src_len - tgt_len
         q *= self.scaling
 
         q = q.transpose(1, 2)
-        keys = keys.transpose(1, 2)
-        values = values.transpose(1, 2)
+        keys = k.transpose(1, 2)
+        values = v.transpose(1, 2)
 
         attn_scores = torch.matmul(q, keys.transpose(2, 3))
         if attn_mask is None:

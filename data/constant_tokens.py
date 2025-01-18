@@ -31,7 +31,7 @@ from transformers import AutoTokenizer
 
 # config = OmegaConf.load("./config/mistral_config.yaml")
 
-tokenizer = AutoTokenizer.from_pretrained("BeardedMonster/SabiYarn-125M")
+tokenizer = AutoTokenizer.from_pretrained("Aletheia-ng/SabiYarn-125M")
 
 lang_id_token = tokenizer.encode("<lang_ID>")[0]
 lang_id_label_token = tokenizer.encode("<lang_ID_label>")[0]

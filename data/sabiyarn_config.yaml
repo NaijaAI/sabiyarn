@@ -1,6 +1,6 @@
 # model/tokenizer
 repo_name : "Aletheia-ng/naijaweb-edu"
-tokenizer_name: "BeardedMonster/SabiYarn-125M"
+tokenizer_name: "Aletheia-ng/SabiYarn-125M"
 gradient_checkpointing: true
 n_positions: 131072
 sliding_window: 4096
