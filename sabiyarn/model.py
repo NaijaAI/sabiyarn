@@ -1,6 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# This software may be used and distributed according to the terms of the Llama 2 Community License Agreement.
-
 import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -37,7 +34,7 @@ class ModelArgs:
     max_batch_size: int = 32
     max_seq_len: int = 2048
     use_j: bool = True
-    attention_type = "differential_attention"
+    attention_type: str = "differential_attention"
     diff_attn_args: Optional[DiffAttnArgs] = None
 
 
@@ -224,12 +221,14 @@ class Attention(nn.Module):
         )
         self.wk = nn.Linear(
             args.dim,
-            self.n_kv_heads * self.head_dim,
+            # self.n_kv_heads * self.head_dim,
+            args.dim,
             bias=False
         )
         self.wv = nn.Linear(
             args.dim,
-            self.n_kv_heads * self.head_dim,
+            args.dim,
+            # self.n_kv_heads * self.head_dim,
             bias=False,
         )
         self.wo = nn.Linear(
@@ -281,38 +280,38 @@ class Attention(nn.Module):
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
 
         xq = xq.view(bsz, seqlen, self.n_local_heads, self.head_dim)
-        xk = xk.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
-        xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
+        xk = xk.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+        xv = xv.view(bsz, seqlen, self.n_local_heads, self.head_dim)
 
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
-        self.cache_k = self.cache_k.to(xq)
-        self.cache_v = self.cache_v.to(xq)
+        # self.cache_k = self.cache_k.to(xq)
+        # self.cache_v = self.cache_v.to(xq)
 
-        self.cache_k[:bsz, start_pos : start_pos + seqlen] = xk
-        self.cache_v[:bsz, start_pos : start_pos + seqlen] = xv
+        # self.cache_k[:bsz, start_pos : start_pos + seqlen] = xk
+        # self.cache_v[:bsz, start_pos : start_pos + seqlen] = xv
 
-        keys = self.cache_k[:bsz, : start_pos + seqlen]
-        values = self.cache_v[:bsz, : start_pos + seqlen]
+        # keys = self.cache_k[:bsz, : start_pos + seqlen]
+        # values = self.cache_v[:bsz, : start_pos + seqlen]
 
-        # repeat k/v heads if n_kv_heads < n_heads
-        keys = repeat_kv(
-            keys, self.n_rep
-        )  # (bs, cache_len + seqlen, n_local_heads, head_dim)
-        values = repeat_kv(
-            values, self.n_rep
-        )  # (bs, cache_len + seqlen, n_local_heads, head_dim)
+        # # repeat k/v heads if n_kv_heads < n_heads
+        # keys = repeat_kv(
+        #     keys, self.n_rep
+        # )  # (bs, cache_len + seqlen, n_local_heads, head_dim)
+        # values = repeat_kv(
+        #     values, self.n_rep
+        # ) # (bs, cache_len + seqlen, n_local_heads, head_dim)
 
         xq = xq.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
-        keys = keys.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
-        values = values.transpose(
+        xk = xk.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
+        xv = xv.transpose(
             1, 2
         )  # (bs, n_local_heads, cache_len + seqlen, head_dim)
-        scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
+        scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
         if mask is not None:
-            scores = scores + mask  # (bs, n_local_heads, seqlen, cache_len + seqlen)
+            scores = scores + mask.to("cuda")  # (bs, n_local_heads, seqlen, cache_len + seqlen)
         scores = F.softmax(scores.float(), dim=-1).type_as(xq)
-        output = torch.matmul(scores, values)  # (bs, n_local_heads, seqlen, head_dim)
+        output = torch.matmul(scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         return self.wo(output)
 
@@ -623,6 +622,33 @@ class SabiYarn(nn.Module):
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         return f"Trainable parameters: {trainable_params//1e6}M"
     
+    @torch.no_grad()
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+        """
+        Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
+        the sequence max_new_tokens times, feeding the predictions back into the model each time.
+        Most likely you'll want to make sure to be in model.eval() mode of operation for this.
+        """
+        for _ in range(max_new_tokens):
+            # if the sequence context is growing too long we must crop it at block_size
+            idx_cond = idx if idx.size(1) <= self.params.max_seq_len else idx[:, -self.params.max_Seq_len:]
+            # forward the model to get the logits for the index in the sequence
+            _, logits = self(idx_cond, start_pos=0)
+            # pluck the logits at the final step and scale by desired temperature
+            logits = logits[:, -1, :] / temperature
+            # optionally crop the logits to only the top k options
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float('Inf')
+            # apply softmax to convert logits to (normalized) probabilities
+            probs = F.softmax(logits, dim=-1)
+            # sample from the distribution
+            idx_next = torch.multinomial(probs, num_samples=1)
+            # append sampled index to the running sequence and continue
+            idx = torch.cat((idx, idx_next), dim=1)
+
+        return idx
+    
     def forward(self, tokens: torch.Tensor, start_pos: int, mask=None):
         """
         Perform a forward pass through the Transformer model.
@@ -638,9 +664,9 @@ class SabiYarn(nn.Module):
         _bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
         self.freqs_cis = self.freqs_cis.to(h.device)
-        freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
+        freqs_cis = self.freqs_cis[start_pos:start_pos + seqlen]
 
-        if mask == None:
+        if mask is None:
             if seqlen > 1:
                 mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
 
@@ -657,5 +683,5 @@ class SabiYarn(nn.Module):
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
         hidden_states = self.norm(h)
-        output = self.lm_head(hidden_states).float()
-        return hidden_states, output
+        logits = self.lm_head(hidden_states).float()
+        return hidden_states, logits

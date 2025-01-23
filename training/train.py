@@ -1,21 +1,3 @@
-"""
-This training script can be run both on a single gpu in debug mode,
-and also in a larger training run with distributed data parallel (ddp).
-
-To run on a single GPU, example:
-$ python train.py --batch_size=32 --compile=False
-
-To run with DDP on 4 gpus on 1 node, example:
-$ torchrun --standalone --nproc_per_node=4 train.py
-
-To run with DDP on 4 gpus across 2 nodes, example:
-- Run on the first (master) node with example IP 123.456.123.456:
-$ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=0 --master_addr=123.456.123.456 --master_port=1234 train.py
-- Run on the worker node:
-$ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123.456 --master_port=1234 train.py
-(If your cluster does not have Infiniband interconnect prepend NCCL_IB_DISABLE=1)
-"""
-
 import os
 import time
 import math
@@ -32,6 +14,7 @@ from torch.nn import functional as F
 
 from ..sabiyarn.model import ModelArgs, SabiYarn, MoeArgs
 from ..sabiyarn.differential_attention import DiffAttnArgs
+from ..cut_cross_entropy import linear_cross_entropy
 from .utils import *
 from .constant_tokens import MASK
 from .training_attention_mask import create_causal_mask
@@ -84,8 +67,9 @@ multiple_of = 256  # make SwiGLU hidden layer size multiple of large power of 2
 ffn_dim_multiplier = None
 norm_eps = 1e-5
 use_moe = False
-moe=None
-use_differential_attention = False
+moe = None
+attention_type = "differential_attention"
+use_cce = True # to use cut cross entropy or not
 logic_network = False
 max_batch_size = 4
 max_seq_len = 1024
@@ -297,7 +281,7 @@ if init_from == "scratch":
         moe = MoeArgs(num_experts, num_experts_per_tok)
 
     # Change the arguments to what is desirable.
-    if use_differential_attention:
+    if attention_type == "differential_attention":
         diff_attn_args = DiffAttnArgs(
             max_batch_size=max_batch_size,
             n_heads=n_heads,
@@ -306,24 +290,43 @@ if init_from == "scratch":
             max_seq_len=block_size,
             norm_eps=norm_eps,
         )
+        
+        model_args = ModelArgs(
+            dim,
+            n_layers,
+            n_heads,
+            n_kv_heads,
+            vocab_size,
+            multiple_of,
+            ffn_dim_multiplier,
+            norm_eps,
+            moe,
+            logic_network,
+            max_batch_size,
+            max_seq_len,
+            use_j,
+            attention_type,
+            diff_attn_args,
+        )
     else:
         diff_attn_args = None
-    model_args = ModelArgs(
-        dim,
-        n_layers,
-        n_heads,
-        n_kv_heads,
-        vocab_size,
-        multiple_of,
-        ffn_dim_multiplier,
-        norm_eps,
-        moe,
-        logic_network,
-        max_batch_size,
-        max_seq_len,
-        use_j,
-        diff_attn_args,
-    )
+        model_args = ModelArgs(
+            dim=dim,
+            n_layers=n_layers,
+            n_heads=n_heads,
+            n_kv_heads=n_kv_heads,
+            vocab_size=vocab_size,
+            multiple_of=multiple_of,
+            ffn_dim_multiplier=ffn_dim_multiplier,
+            norm_eps=norm_eps,
+            moe=moe,
+            logic_network=logic_network,
+            max_batch_size=max_batch_size,
+            max_seq_len=max_seq_len,
+            use_j=use_j,
+            attention_type=attention_type,
+            diff_attn_args=diff_attn_args,
+        )
 
     model = SabiYarn(model_args)
     LOG.info(f"{model.get_model_size()}")
@@ -343,7 +346,7 @@ elif init_from == "resume":
     if use_moe:
         moe = MoeArgs(num_experts, num_experts_per_tok)
 
-    if use_differential_attention:
+    if attention_type == "differential_attention":
         diff_attn_args = DiffAttnArgs(
             max_batch_size=max_batch_size,
             n_heads=n_heads,
@@ -424,7 +427,7 @@ def _prepare_mask_(b=None, block_size=block_size, eval=False):
 
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
-def estimate_loss():
+def estimate_loss(use_cce: bool = False):
     out = {}
     model.eval()
     for split in ["train", "val"]:
@@ -436,11 +439,21 @@ def estimate_loss():
                 attn_mask = _prepare_mask_(b, block_size=block_size)
                 attn_mask = create_causal_mask(X, attn_mask.to('cuda'))
                 attn_mask.to(device)
-                _, logits = model(tokens=X, mask=attn_mask, start_pos=0)
-                loss = F.cross_entropy(
-                    logits.view(-1, logits.size(-1)), Y.view(-1),
-                    ignore_index=-100
-                )
+                hidden_states, logits = model(tokens=X, mask=attn_mask, 
+                                              start_pos=0)
+                if use_cce:
+                    loss = linear_cross_entropy(
+                        hidden_states,
+                        model.lm_head.weight,
+                        Y,
+                        shift=True,
+                        impl="torch_compile"
+                    )
+                else:
+                    loss = F.cross_entropy(
+                        logits.view(-1, logits.size(-1)), Y.view(-1),
+                        ignore_index=-100
+                    )
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
@@ -512,7 +525,7 @@ def train():
 
         # evaluate the loss on train/val sets and write checkpoints
         if iter_num % eval_interval == 0 and master_process:
-            losses = estimate_loss()
+            losses = estimate_loss(use_cce)
             print(
                 f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}"
             )
@@ -562,13 +575,24 @@ def train():
                 attn_mask = create_causal_mask(X, attn_mask)
                 attn_mask.to("cuda")
                 # print("Attention mask: ", attn_mask)
-                _, logits = model(tokens=X, mask=attn_mask, start_pos=0)
-                loss = F.cross_entropy(
-                    logits.view(-1, logits.size(-1)), Y.view(-1), ignore_index=-100
-                )
-                loss = (
-                    loss / gradient_accumulation_steps
-                )  # scale the loss to account for gradient accumulation
+                hidden_states, logits = model(tokens=X, mask=attn_mask, start_pos=0)
+                if use_cce:
+                    loss = linear_cross_entropy(
+                        hidden_states,
+                        model.lm_head.weight,
+                        Y,
+                        shift=True,
+                        impl="torch_compile"
+                    )
+                else:
+
+                    loss = F.cross_entropy(
+                        logits.view(-1, logits.size(-1)), Y.view(-1),
+                        ignore_index=-100
+                    )
+                    loss = (
+                        loss / gradient_accumulation_steps
+                    )  # scale the loss to account for gradient accumulation
             # immediately async prefetch next batch while model is doing the forward pass on the GPU
             X, Y = get_batch("train")
             # backward pass, with gradient scaling if training in fp16
@@ -591,15 +615,15 @@ def train():
             # get loss as float. note: this is a CPU-GPU sync point
             # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
             lossf = loss.item() * gradient_accumulation_steps
-            if local_iter_num >= 5:  # let the training loop settle a bit
-                mfu = raw_model.estimate_mfu(
-                    batch_size * gradient_accumulation_steps, dt
-                )
-                running_mfu = (
-                    mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
-                )
+            # if local_iter_num >= 5:  # let the training loop settle a bit
+                # mfu = raw_model.estimate_mfu(
+                #     batch_size * gradient_accumulation_steps, dt
+                # )
+                # running_mfu = (
+                #     mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
+                # )
             print(
-                f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%"
+                f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms,"
             )
         iter_num += 1
         local_iter_num += 1
