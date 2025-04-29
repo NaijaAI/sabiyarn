@@ -6,9 +6,9 @@ from enum import auto
 import torch
 import torch.nn as nn
 
-from cut_cross_entropy.constants import IGNORE_INDEX
-from cut_cross_entropy.doc import LINEAR_CROSS_ENTROPY_DOC, add_doc_start
-from cut_cross_entropy.torch_compile import torch_compile_linear_cross_entropy
+from ..cut_cross_entropy.constants import IGNORE_INDEX
+from ..cut_cross_entropy.doc import LINEAR_CROSS_ENTROPY_DOC, add_doc_start
+from ..cut_cross_entropy.torch_compile import torch_compile_linear_cross_entropy
 
 
 class LinearCrossEntropyImpl(enum.IntEnum):
@@ -17,7 +17,7 @@ class LinearCrossEntropyImpl(enum.IntEnum):
 
 
 if platform.system() != "Darwin":
-    from cut_cross_entropy.cce import cce_linear_cross_entropy
+    from ..cut_cross_entropy.cce import cce_linear_cross_entropy
 
     LCE_IMPL_DEFAULT = LinearCrossEntropyImpl.CCE
 else:
@@ -85,7 +85,9 @@ class LinearCrossEntropy(nn.Module):
 
         self.impl = impl
 
-    def forward(self, e: torch.Tensor, c: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, e: torch.Tensor, c: torch.Tensor, targets: torch.Tensor
+    ) -> torch.Tensor:
         return linear_cross_entropy(
             e,
             c,

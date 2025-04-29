@@ -4,14 +4,15 @@ import math
 from contextlib import nullcontext
 import structlog
 
-import numpy as np
-import torch
-from transformers import AutoTokenizer
-from torch.nn.parallel import DistributedDataParallel as DDP
-import torch.distributed as dist
-from torch.distributed import init_process_group, destroy_process_group
-from torch.nn import functional as F
+# import numpy as np
+# import torch
+# from transformers import AutoTokenizer
+# from torch.nn.parallel import DistributedDataParallel as DDP
+# import torch.distributed as dist
+# from torch.distributed import init_process_group, destroy_process_group
+# from torch.nn import functional as F
 
+from ..data import prepare
 from ..sabiyarn.model import ModelArgs, SabiYarn, MoeArgs
 from ..sabiyarn.differential_attention import DiffAttnArgs
 from ..cut_cross_entropy import linear_cross_entropy
@@ -32,7 +33,7 @@ wandb_key = os.getenv("WANDB_API_KEY")
 hf_key = os.getenv("HF_WRITE_TOKEN")
 
 # I/O
-train_batch_size = 10
+train_batch_size = 24
 train_data_path = "./train.bin"
 eval_data_path = "./val.bin"
 out_dir = "out"
@@ -57,11 +58,11 @@ batch_size = (
 
 # model
 vocab_size = 52050
-n_layers = 12
-n_heads = 12
+n_layers = 24
+n_heads = 8
 dropout = 0.0  # for pretraining 0 is good, for finetuning try 0.1+
 bias = False  # do we use bias inside LayerNorm and Linear layers?
-dim = 768
+dim = 2048
 n_kv_heads = 4
 multiple_of = 256  # make SwiGLU hidden layer size multiple of large power of 2
 ffn_dim_multiplier = None
@@ -69,9 +70,9 @@ norm_eps = 1e-5
 use_moe = False
 moe = None
 attention_type = "differential_attention"
-use_cce = True # to use cut cross entropy or not
+use_cce = True  # to use cut cross entropy or not
 logic_network = False
-max_batch_size = 4
+max_batch_size = 8
 max_seq_len = 1024
 block_size = max_seq_len
 use_j = True
@@ -80,7 +81,7 @@ num_experts = 4
 num_experts_per_tok = 2
 # adamw optimizer
 optimizer = "adam"
-learning_rate = 6e-4  # max learning rate
+learning_rate = 3e-4  # max learning rate
 max_iters = 600000  # total number of training iterations
 weight_decay = 1e-1
 beta1 = 0.9
@@ -101,9 +102,10 @@ world_size = torch.cuda.device_count()
 backend = "nccl"
 
 
-
 # system
-device = "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
+device = (
+    "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
+)
 dtype = (
     "bfloat16"
     if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
@@ -124,18 +126,20 @@ config = {k: globals()[k] for k in config_keys}
 
 # -----------------------------------------------------------------------------
 
+LOG.info("Downloading and preprocessing tokens...")
+
+prepare.run()
+LOG.info("starting training...")
 tokenizer = AutoTokenizer.from_pretrained("Aletheia-ng/SabiYarn-125M")
 # various inits, derived attributes, I/O setup
 ddp = False
 if ddp:
-    dist.init_process_group(backend=backend,
-                            rank=rank,
-                            init_method="env://",
-                            world_size=world_size
-                            )
+    dist.init_process_group(
+        backend=backend, rank=rank, init_method="env://", world_size=world_size
+    )
     LOG.info("distributed processing initialized successfully....")
     torch.cuda.set_device(rank)
-    device = torch.device('cuda', rank)
+    device = torch.device("cuda", rank)
     master_process = rank == 0  # this process will do logging, checkpointing etc.
     seed_offset = rank  # each process gets a different seed
     # world_size number of processes will be training simultaneously, so we can scale
@@ -183,7 +187,7 @@ def get_batch(split, verbose=False):
     # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
     if split == "train":
         data = np.memmap(train_data_path, dtype=np.uint16, mode="r")
-    else: 
+    else:
         data = np.memmap(eval_data_path, dtype=np.uint16, mode="r")
     ix = torch.randint(len(data) - block_size, (train_batch_size,))
     x = [torch.from_numpy((data[i : i + block_size]).astype(np.int64)) for i in ix]
@@ -224,13 +228,11 @@ def configure_optimizer(
     betas=(0.9, 0.999),
 ):
     if optimizer_type == "sgd":
-        optimizer = SGD(model.parameters(), lr=learning_rate, 
-                        weight_decay=weight_decay)
+        optimizer = SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     elif optimizer_type == "adam":
         optimizer = Adam(
-            model.parameters(), lr=learning_rate, betas=betas, 
-            weight_decay=weight_decay
+            model.parameters(), lr=learning_rate, betas=betas, weight_decay=weight_decay
         )
 
     elif optimizer_type == "adamw":
@@ -290,7 +292,7 @@ if init_from == "scratch":
             max_seq_len=block_size,
             norm_eps=norm_eps,
         )
-        
+
         model_args = ModelArgs(
             dim,
             n_layers,
@@ -393,8 +395,7 @@ model.to(device)
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == dtype))
 
 # optimizer
-optimizer = configure_optimizer(model, optimizer, weight_decay, 
-                                betas=(beta1, beta2))
+optimizer = configure_optimizer(model, optimizer, weight_decay, betas=(beta1, beta2))
 
 if init_from == "resume":
     optimizer.load_state_dict(checkpoint["optimizer"])
@@ -437,22 +438,20 @@ def estimate_loss(use_cce: bool = False):
             b = len(X)
             with ctx:
                 attn_mask = _prepare_mask_(b, block_size=block_size)
-                attn_mask = create_causal_mask(X, attn_mask.to('cuda'))
+                attn_mask = create_causal_mask(X, attn_mask.to("cuda"))
                 attn_mask.to(device)
-                hidden_states, logits = model(tokens=X, mask=attn_mask, 
-                                              start_pos=0)
+                hidden_states, logits = model(tokens=X, mask=attn_mask, start_pos=0)
                 if use_cce:
                     loss = linear_cross_entropy(
                         hidden_states,
                         model.lm_head.weight,
                         Y,
                         shift=True,
-                        impl="torch_compile"
+                        impl="torch_compile",
                     )
                 else:
                     loss = F.cross_entropy(
-                        logits.view(-1, logits.size(-1)), Y.view(-1),
-                        ignore_index=-100
+                        logits.view(-1, logits.size(-1)), Y.view(-1), ignore_index=-100
                     )
             losses[k] = loss.item()
         out[split] = losses.mean()
@@ -582,13 +581,12 @@ def train():
                         model.lm_head.weight,
                         Y,
                         shift=True,
-                        impl="torch_compile"
+                        impl="torch_compile",
                     )
                 else:
 
                     loss = F.cross_entropy(
-                        logits.view(-1, logits.size(-1)), Y.view(-1),
-                        ignore_index=-100
+                        logits.view(-1, logits.size(-1)), Y.view(-1), ignore_index=-100
                     )
                     loss = (
                         loss / gradient_accumulation_steps
@@ -616,15 +614,13 @@ def train():
             # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
             lossf = loss.item() * gradient_accumulation_steps
             # if local_iter_num >= 5:  # let the training loop settle a bit
-                # mfu = raw_model.estimate_mfu(
-                #     batch_size * gradient_accumulation_steps, dt
-                # )
-                # running_mfu = (
-                #     mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
-                # )
-            print(
-                f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms,"
-            )
+            # mfu = raw_model.estimate_mfu(
+            #     batch_size * gradient_accumulation_steps, dt
+            # )
+            # running_mfu = (
+            #     mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
+            # )
+            print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms,")
         iter_num += 1
         local_iter_num += 1
 

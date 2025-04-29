@@ -223,7 +223,7 @@ class Attention(nn.Module):
             args.dim,
             # self.n_kv_heads * self.head_dim,
             args.dim,
-            bias=False
+            bias=False,
         )
         self.wv = nn.Linear(
             args.dim,
@@ -304,12 +304,12 @@ class Attention(nn.Module):
 
         xq = xq.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         xk = xk.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
-        xv = xv.transpose(
-            1, 2
-        )  # (bs, n_local_heads, cache_len + seqlen, head_dim)
+        xv = xv.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
         scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
         if mask is not None:
-            scores = scores + mask.to("cuda")  # (bs, n_local_heads, seqlen, cache_len + seqlen)
+            scores = scores + mask.to(
+                "cuda"
+            )  # (bs, n_local_heads, seqlen, cache_len + seqlen)
         scores = F.softmax(scores.float(), dim=-1).type_as(xq)
         output = torch.matmul(scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
@@ -347,13 +347,19 @@ class FeedForward(nn.Module):
         hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
 
         self.w1 = nn.Linear(
-            dim, hidden_dim, bias=False,
+            dim,
+            hidden_dim,
+            bias=False,
         )
         self.w2 = nn.Linear(
-            hidden_dim, dim, bias=False,
+            hidden_dim,
+            dim,
+            bias=False,
         )
         self.w3 = nn.Linear(
-            dim, hidden_dim, bias=False,
+            dim,
+            hidden_dim,
+            bias=False,
         )
 
     def forward(self, x):
@@ -362,7 +368,10 @@ class FeedForward(nn.Module):
 
 class TransformerBlock(nn.Module):
     def __init__(
-        self, layer_id: int, args: ModelArgs, diff_attn_args: Optional[DiffAttnArgs] = None
+        self,
+        layer_id: int,
+        args: ModelArgs,
+        diff_attn_args: Optional[DiffAttnArgs] = None,
     ):
         """
         Initialize a TransformerBlock.
@@ -616,12 +625,12 @@ class SabiYarn(nn.Module):
                 // 2,
                 self.params.max_seq_len * 2,
             )
-    
+
     def get_model_size(self):
         # Calculate number of trainable parameters
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         return f"Trainable parameters: {trainable_params//1e6}M"
-    
+
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
         """
@@ -631,7 +640,11 @@ class SabiYarn(nn.Module):
         """
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
-            idx_cond = idx if idx.size(1) <= self.params.max_seq_len else idx[:, -self.params.max_Seq_len:]
+            idx_cond = (
+                idx
+                if idx.size(1) <= self.params.max_seq_len
+                else idx[:, -self.params.max_seq_len :]
+            )
             # forward the model to get the logits for the index in the sequence
             _, logits = self(idx_cond, start_pos=0)
             # pluck the logits at the final step and scale by desired temperature
@@ -639,7 +652,7 @@ class SabiYarn(nn.Module):
             # optionally crop the logits to only the top k options
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits[logits < v[:, [-1]]] = -float('Inf')
+                logits[logits < v[:, [-1]]] = -float("Inf")
             # apply softmax to convert logits to (normalized) probabilities
             probs = F.softmax(logits, dim=-1)
             # sample from the distribution
@@ -648,7 +661,7 @@ class SabiYarn(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)
 
         return idx
-    
+
     def forward(self, tokens: torch.Tensor, start_pos: int, mask=None):
         """
         Perform a forward pass through the Transformer model.
@@ -664,11 +677,12 @@ class SabiYarn(nn.Module):
         _bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
         self.freqs_cis = self.freqs_cis.to(h.device)
-        freqs_cis = self.freqs_cis[start_pos:start_pos + seqlen]
+        freqs_cis = self.freqs_cis[start_pos: start_pos + seqlen]
 
         if mask is None:
             if seqlen > 1:
-                mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
+                mask = torch.full((seqlen, seqlen), float("-inf"),
+                                  device=tokens.device)
 
                 mask = torch.triu(mask, diagonal=1)
 

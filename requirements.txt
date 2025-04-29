@@ -1,4 +1,21 @@
-torch
-fairscale
-fire
-sentencepiece
+bitsandbytes==0.45.1
+datasets==3.2.0
+fairscale==0.4.13
+# fastapi==0.115.8
+fire==0.7.0
+huggingface_hub==0.27.1
+python-dotenv
+modal==0.71.0
+numpy==2.2.2
+omegaconf==2.3.0
+pydantic==2.10.6
+pynvml==12.0.0
+PyYAML==6.0.2
+PyYAML==6.0.2
+sentencepiece==0.2.0
+setuptools==75.8.0
+structlog==25.1.0
+torch==2.6.0
+tqdm==4.67.1
+triton==3.2.0
+wandb==0.19.5

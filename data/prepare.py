@@ -7,6 +7,7 @@ import numpy as np
 
 # import tiktoken
 from datasets import load_dataset
+from dotenv import load_dotenv
 import yaml
 from transformers import AutoTokenizer
 import json
@@ -14,16 +15,18 @@ from .constant_tokens import end_of_text_token
 import structlog
 
 LOG = structlog.stdlib.get_logger()
+
 hf_key = os.getenv("HF_API_KEY")
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 current_dir = os.path.dirname(os.path.abspath(__file__))
-print(current_dir)
 project_root = os.path.dirname(os.path.dirname(current_dir))
 config_path = os.path.join(current_dir, "sabiyarn_config.yaml")
 with open(config_path, "r") as config_file:
     config = yaml.safe_load(config_file)
 
-
+env_path = os.path.join(project_root, ".env")
+load_dotenv(env_path)
+hf_key = os.getenv("HF_API_KEY")
 num_proc = config["num_proc"]
 
 # number of workers in load_dataset() call

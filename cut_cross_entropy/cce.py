@@ -4,12 +4,12 @@ from typing import cast
 
 import torch
 
-from cut_cross_entropy.cce_backward import cce_backward_kernel
-from cut_cross_entropy.cce_lse_forward import cce_lse_forward_kernel
-from cut_cross_entropy.constants import IGNORE_INDEX
-from cut_cross_entropy.doc import LINEAR_CROSS_ENTROPY_DOC, add_doc_start
-from cut_cross_entropy.indexed_dot import indexed_neg_dot_forward_kernel
-from cut_cross_entropy.utils import (
+from ..cut_cross_entropy.cce_backward import cce_backward_kernel
+from ..cut_cross_entropy.cce_lse_forward import cce_lse_forward_kernel
+from ..cut_cross_entropy.constants import IGNORE_INDEX
+from ..cut_cross_entropy.doc import LINEAR_CROSS_ENTROPY_DOC, add_doc_start
+from ..cut_cross_entropy.indexed_dot import indexed_neg_dot_forward_kernel
+from ..cut_cross_entropy.utils import (
     _build_flat_valids,
     _handle_eps,
     handle_reduction_none,
@@ -70,7 +70,9 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
         elif reduction == "sum":
             loss = nll.sum()
         elif reduction == "none":
-            loss = handle_reduction_none(params.batch_shape, params.valids, params.shift, nll)
+            loss = handle_reduction_none(
+                params.batch_shape, params.valids, params.shift, nll
+            )
         else:
             raise ValueError(f"Unknown reduction {reduction}")
 
@@ -80,7 +82,9 @@ class LinearCrossEntropyFunction(torch.autograd.Function):
         return loss
 
     @staticmethod
-    def backward(ctx, grad_out: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, None]:
+    def backward(
+        ctx, grad_out: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, None]:
         h, w, lse, targets, valids, logit_avg = ctx.saved_tensors
 
         if logit_avg is not None:

@@ -92,7 +92,9 @@ def early_config_prune(
             config.num_stages,
         )
 
-        max_shared_memory = driver.active.utils.get_device_properties(device)["max_shared_mem"]
+        max_shared_memory = driver.active.utils.get_device_properties(device)[
+            "max_shared_mem"
+        ]
         required_shared_memory = (
             shared_memory_factor * (BLOCK_B + BLOCK_V) * BLOCK_D * num_stages * dtsize
         )
@@ -136,9 +138,11 @@ def early_config_prune(
             nearest = heapq.nsmallest(
                 2,
                 v,
-                key=lambda x: 10 + abs(x[1] - optimal_num_stages)
-                if (x[1] - optimal_num_stages) < 0
-                else x[1] - optimal_num_stages,
+                key=lambda x: (
+                    10 + abs(x[1] - optimal_num_stages)
+                    if (x[1] - optimal_num_stages) < 0
+                    else x[1] - optimal_num_stages
+                ),
             )
 
             for n in nearest:
@@ -196,8 +200,12 @@ def estimate_matmul_time(
     # time to load data
     num_sm = driver.active.utils.get_device_properties(device)["multiprocessor_count"]
     active_cta_ratio = min(1, num_ctas / num_sm)
-    active_cta_ratio_bw1 = min(1, num_ctas / 32)  # 32 active ctas are enough to saturate
-    active_cta_ratio_bw2 = max(min(1, (num_ctas - 32) / (108 - 32)), 0)  # 32-108, remaining 5%
+    active_cta_ratio_bw1 = min(
+        1, num_ctas / 32
+    )  # 32 active ctas are enough to saturate
+    active_cta_ratio_bw2 = max(
+        min(1, (num_ctas - 32) / (108 - 32)), 0
+    )  # 32-108, remaining 5%
     dram_bw = get_dram_gbps(device) * (
         active_cta_ratio_bw1 * 0.95 + active_cta_ratio_bw2 * 0.05
     )  # in GB/s
@@ -308,7 +316,9 @@ def get_autotune_config():
             num_stages=4,
             num_warps=4,
         ),
-        Config({"BLOCK_B": 64, "BLOCK_V": 32, "BLOCK_D": 32}, num_stages=5, num_warps=2),
+        Config(
+            {"BLOCK_B": 64, "BLOCK_V": 32, "BLOCK_D": 32}, num_stages=5, num_warps=2
+        ),
         # good for int8
         Config(
             {"BLOCK_B": 128, "BLOCK_V": 256, "BLOCK_D": 128},
@@ -360,12 +370,16 @@ def get_autotune_config():
             num_stages=4,
             num_warps=4,
         ),
-        Config({"BLOCK_B": 64, "BLOCK_V": 32, "BLOCK_D": 64}, num_stages=5, num_warps=2),
+        Config(
+            {"BLOCK_B": 64, "BLOCK_V": 32, "BLOCK_D": 64}, num_stages=5, num_warps=2
+        ),
     ] + get_configs_io_bound()
 
 
 def _heuristics_from_config(config: Config) -> Callable[..., autotuner.Heuristics]:
-    return triton.heuristics({k: (lambda args, _v=v: _v) for k, v in config.all_kwargs().items()})
+    return triton.heuristics(
+        {k: (lambda args, _v=v: _v) for k, v in config.all_kwargs().items()}
+    )
 
 
 def _cce_forward_best_config() -> Config:
@@ -400,7 +414,9 @@ def _cce_backward_best_config() -> Config:
     return Config(dict(BLOCK_B=128, BLOCK_V=128, BLOCK_D=32), num_warps=4, num_stages=4)
 
 
-def cce_backward_autotune() -> Callable[..., autotuner.Autotuner | autotuner.Heuristics]:
+def cce_backward_autotune() -> (
+    Callable[..., autotuner.Autotuner | autotuner.Heuristics]
+):
     if _AUTOTUNE:
         return triton.autotune(
             configs=get_autotune_config(),

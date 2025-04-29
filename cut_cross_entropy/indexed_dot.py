@@ -3,9 +3,9 @@ import torch
 import triton
 import triton.language as tl
 
-from cut_cross_entropy.tl_autotune import indexed_dot_autotune
-from cut_cross_entropy.tl_utils import b_bin_fn
-from cut_cross_entropy.utils import softcapping
+from ..cut_cross_entropy.tl_autotune import indexed_dot_autotune
+from ..cut_cross_entropy.tl_utils import b_bin_fn
+from ..cut_cross_entropy.utils import softcapping
 
 
 def _indexed_neg_dot_forward_kernel(
@@ -101,7 +101,9 @@ def indexed_neg_dot_forward_kernel(
     out = e.new_zeros((B,), dtype=torch.float32)
 
     def grid(META) -> tuple[int]:
-        return (triton.cdiv(B, META["BLOCK_B"]) * triton.cdiv(e.size(1), META["BLOCK_D"]),)
+        return (
+            triton.cdiv(B, META["BLOCK_B"]) * triton.cdiv(e.size(1), META["BLOCK_D"]),
+        )
 
     _indexed_neg_dot_forward_kernel[grid](
         e,

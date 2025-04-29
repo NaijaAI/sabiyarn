@@ -3,7 +3,10 @@ from typing import overload
 
 import transformers
 
-from cut_cross_entropy.linear_cross_entropy import LCE_IMPL_DEFAULT, LinearCrossEntropyImpl
+from cut_cross_entropy.linear_cross_entropy import (
+    LCE_IMPL_DEFAULT,
+    LinearCrossEntropyImpl,
+)
 
 from .gemma2 import patch_gemma2
 from .llama import patch_llama

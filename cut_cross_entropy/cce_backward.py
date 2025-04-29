@@ -3,8 +3,8 @@ import torch
 import triton
 import triton.language as tl
 
-from cut_cross_entropy.tl_autotune import cce_backward_autotune
-from cut_cross_entropy.tl_utils import (
+from ..cut_cross_entropy.tl_autotune import cce_backward_autotune
+from ..cut_cross_entropy.tl_utils import (
     b_bin_fn,
     tl_and_reduce_fn,
     tl_lock_add,
@@ -252,7 +252,9 @@ def cce_backward_kernel(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     assert do.numel() in (e.size(0), 1)
     assert c.size(1) == e.size(1)
-    assert lse.size(0) == e.size(0) or (valids is not None and lse.size(0) == valids.size(0))
+    assert lse.size(0) == e.size(0) or (
+        valids is not None and lse.size(0) == valids.size(0)
+    )
     assert e.dtype in (
         torch.float16,
         torch.bfloat16,
@@ -283,7 +285,9 @@ def cce_backward_kernel(
         assert do.stride(0) == lse.stride(0), f"{do.stride()=}, {lse.stride()=}"
 
     def grid(META):
-        return (triton.cdiv(B, META["BLOCK_B"]) * triton.cdiv(c.size(0), META["BLOCK_V"]),)
+        return (
+            triton.cdiv(B, META["BLOCK_B"]) * triton.cdiv(c.size(0), META["BLOCK_V"]),
+        )
 
     if vocab_ordering is not None:
         assert vocab_ordering.ndim == 1
@@ -292,7 +296,9 @@ def cce_backward_kernel(
 
     nd_locks = triton.cdiv(c.size(1), 64)
     de_locks = e.new_zeros((triton.cdiv(B, nd_locks), nd_locks), dtype=torch.int32)
-    dc_locks = c.new_zeros((triton.cdiv(c.size(0), nd_locks), nd_locks), dtype=torch.int32)
+    dc_locks = c.new_zeros(
+        (triton.cdiv(c.size(0), nd_locks), nd_locks), dtype=torch.int32
+    )
 
     _cce_backward_kernel[grid](
         e,

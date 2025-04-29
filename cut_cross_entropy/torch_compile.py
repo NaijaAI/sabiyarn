@@ -2,9 +2,9 @@
 import torch
 import torch.nn.functional as F
 
-from cut_cross_entropy.constants import IGNORE_INDEX
-from cut_cross_entropy.doc import LINEAR_CROSS_ENTROPY_DOC, add_doc_start
-from cut_cross_entropy.utils import (
+from ..cut_cross_entropy.constants import IGNORE_INDEX
+from ..cut_cross_entropy.doc import LINEAR_CROSS_ENTROPY_DOC, add_doc_start
+from ..cut_cross_entropy.utils import (
     _build_flat_valids,
     handle_reduction_none,
     softcapping,
@@ -26,7 +26,9 @@ def torch_compile_linear_cross_entropy_apply(
     if softcap is not None:
         logits = softcapping(logits, softcap)
 
-    loss = F.cross_entropy(logits.float(), targets, ignore_index=ignore_index, reduction=reduction)
+    loss = F.cross_entropy(
+        logits.float(), targets, ignore_index=ignore_index, reduction=reduction
+    )
 
     return loss
 

@@ -209,20 +209,16 @@ class DiffAttention(nn.Module):
 
         self.lambda_init = lambda_init_fn(self.depth)
         self.lambda_q1 = nn.Parameter(
-            torch.normal(mean=0, std=0.1, size=(self.head_dim,), 
-                         dtype=torch.float32)
+            torch.normal(mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32)
         )
         self.lambda_q2 = nn.Parameter(
-            torch.normal(mean=0, std=0.1, size=(self.head_dim,), 
-                         dtype=torch.float32)
+            torch.normal(mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32)
         )
         self.lambda_k1 = nn.Parameter(
-            torch.normal(mean=0, std=0.1, size=(self.head_dim,), 
-                         dtype=torch.float32)
+            torch.normal(mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32)
         )
         self.lambda_k2 = nn.Parameter(
-            torch.normal(mean=0, std=0.1, size=(self.head_dim,), 
-                         dtype=torch.float32)
+            torch.normal(mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32)
         )
 
         self.sublayer_norm = RMSNorm(
@@ -285,8 +281,7 @@ class DiffAttention(nn.Module):
 
         attn_scores = torch.nan_to_num(attn_scores)
         attn_scores += attn_mask.to("cuda")
-        attn_weights = F.softmax(attn_scores,
-                                 dim=-1, dtype=torch.float32).type_as(
+        attn_weights = F.softmax(attn_scores, dim=-1, dtype=torch.float32).type_as(
             attn_scores
         )
         lambda_1 = torch.exp(
@@ -297,8 +292,7 @@ class DiffAttention(nn.Module):
         ).type_as(q)
         lambda_full = lambda_1 - lambda_2 + self.lambda_init
 
-        attn_weights = attn_weights.view(bsz, self.num_heads,
-                                         2, tgt_len, src_len)
+        attn_weights = attn_weights.view(bsz, self.num_heads, 2, tgt_len, src_len)
         attn_weights = attn_weights[:, :, 0] - lambda_full * attn_weights[:, :, 1]
 
         ctx_vec = torch.matmul(attn_weights, values)

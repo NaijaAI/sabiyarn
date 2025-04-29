@@ -5,8 +5,8 @@ import torch
 import triton
 import triton.language as tl
 
-from cut_cross_entropy.tl_autotune import cce_forward_autotune
-from cut_cross_entropy.tl_utils import b_bin_fn, tl_logaddexp, tl_softcapping
+from ..cut_cross_entropy.tl_autotune import cce_forward_autotune
+from ..cut_cross_entropy.tl_utils import b_bin_fn, tl_logaddexp, tl_softcapping
 
 
 def _cce_lse_forward_kernel(
@@ -109,9 +109,9 @@ _cce_lse_forward_kernel = triton.heuristics(  # type: ignore
         "HAS_SOFTCAP": lambda args: args["softcap"] is not None,
         "HAS_LA": lambda args: args["LA"] is not None,
         "GROUP_B": lambda args: 8,
-        "DOT_PRECISION": lambda args: "tf32"
-        if torch.get_float32_matmul_precision() == "high"
-        else "ieee",
+        "DOT_PRECISION": lambda args: (
+            "tf32" if torch.get_float32_matmul_precision() == "high" else "ieee"
+        ),
     }
 )(_cce_lse_forward_kernel)
 _cce_lse_forward_kernel = cce_forward_autotune()(_cce_lse_forward_kernel)  # type: ignore

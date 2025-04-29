@@ -1,10 +1,11 @@
 import modal
 from modal import App, Image, Secret, Volume
 from pathlib import Path
+import modal.gpu
 import structlog
 
 sabiyarn = Image.debian_slim(python_version="3.12").pip_install(
-    "transformers[torch]",
+    "transformers[torch]==4.41.2",
     "triton",
     "bitsandbytes",
     "datasets",
@@ -13,8 +14,8 @@ sabiyarn = Image.debian_slim(python_version="3.12").pip_install(
     "PyYAML",
     "simple-parsing==0.0.3rc1",
     "sentencepiece",
-    "fairscale",
-    # force_build=True
+    "scikit-learn",
+    force_build=True,
 )
 
 LOG = structlog.stdlib.get_logger()
@@ -37,30 +38,20 @@ def track_restarts(restart_tracker: modal.Dict) -> int:
     return preemption_count
 
 
-def prepare_train():
-    from ..data import prepare
-    import torch
+def run_eval(vol: modal.Volume):
+    from . import eval
 
-    print(f" there are {torch.cuda.device_count()} gpus available")
-
-    prepare.run()
-
-
-def run_train():
-    from ..training import train
-
-    LOG.info("starting training runs")
-    train.train()
+    eval.run_all(vol)
 
 
 @stub.function(
-    gpu=modal.gpu.L40S(),
-    timeout=60 * 60 * 4,
-    cpu=8.0,
+    gpu=modal.gpu.T4(),
+    timeout=60 * 60 * 20,
+    cpu=4.0,
     secrets=[Secret.from_name("wandb-api"), Secret.from_name("hf-secret")],
     volumes={VOL_MOUNT_PATH: output_vol},
 )
 def run():
     LOG.info("modal instance running..")
-    prepare_train()
-    run_train()
+    run_eval(output_vol)
+    output_vol.commit()

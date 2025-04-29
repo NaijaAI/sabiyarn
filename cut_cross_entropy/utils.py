@@ -44,7 +44,10 @@ def _build_flat_valids(
 
 
 def handle_reduction_none(
-    batch_shape: torch.Size, valids: torch.Tensor | None, shift: bool, loss: torch.Tensor
+    batch_shape: torch.Size,
+    valids: torch.Tensor | None,
+    shift: bool,
+    loss: torch.Tensor,
 ) -> torch.Tensor:
     if valids is None:
         return loss.view(batch_shape)
