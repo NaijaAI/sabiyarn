@@ -74,7 +74,7 @@ tokenized_data = data.map(preprocess_data, batched=True, batch_size=64,).with_fo
 LOG.info("...tokenizing dataset done")
 
 split_data = tokenized_data['train'].train_test_split(test_size=0.1, seed=42)
-train_dataset = split_data['train'][:2000]
+train_dataset = split_data['train']
 val_dataset = split_data['test']
 
 
