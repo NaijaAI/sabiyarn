@@ -1,10 +1,10 @@
 # SabiYarn: Small LLM Pretraining & Inference
 
-[![CI/CD](https://github.com/<your-username>/sabiyarn/actions/workflows/test.yml/badge.svg)](https://github.com/<your-username>/sabiyarn/actions/workflows/test.yml)
+[![CI/CD](https://github.com/NaijaAI/sabiyarn/actions/workflows/test.yml/badge.svg)](https://github.com/NaijaAI/sabiyarn/actions/workflows/test.yml)
 
 SabiYarn is a research codebase for pretraining, fine-tuning, and running inference on small Large Language Models (LLMs) on African Languages. It includes modular implementations of transformer blocks, differential attention mechanisms, and advanced features such as Mixture-of-Experts (MoE) and Multi-Head Latent Attention (MLA).
 
-[Read the Paper here]()
+[Read the Paper here](https://openreview.net/forum?id=3U1LCDdYwy)
 
 ## Features
 - Modular transformer architecture (see `sabiyarn/model.py`)
