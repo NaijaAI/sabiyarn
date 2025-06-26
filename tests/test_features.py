@@ -2,7 +2,7 @@ import pytest
 import torch
 import modal
 from sabiyarn.model import SabiYarn, ModelArgs, AttentionType
-from sabiyarn.cut_cross_entropy import cut_cross_entropy_loss
+from ..sabiyarn.cut_cross_entropy import cut_cross_entropy_loss
 from sabiyarn.MLA import MLA, MLAConfig
 
 # Modal stub for running tests on Modal
@@ -28,10 +28,19 @@ def test_mla_forward():
         qk_nope_head_dim=32,
         attention_bias=False,
     )
-    mla = MLA(config)
+    args = ModelArgs(
+        dim=256,
+        n_layers=2,
+        n_heads=4,
+        vocab_size=100,
+        max_seq_len=32,
+        attention_type=AttentionType.MLA,
+        mla_config=config
+    )
+    model = SabiYarn(args)
     x = torch.randn(2, 32, 512)
     position_ids = torch.arange(32).unsqueeze(0).expand(2, -1)
-    out, attn = mla(x, position_ids)
+    out, attn = model(x, position_ids)
     assert out.shape == (2, 32, 512)
     assert attn.shape[0] == 2
 

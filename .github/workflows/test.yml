@@ -1,6 +1,7 @@
 name: Test Model
 
 on: [push, pull_request]
+branch: [main]
 
 jobs:
   test:
