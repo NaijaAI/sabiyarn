@@ -1,4 +1,4 @@
-# SabiYarn: Small LLM Pretraining & Inference
+# SabiYarn: Pretraining a Small Language Model on African Languages
 
 [![CI/CD](https://github.com/NaijaAI/sabiyarn/actions/workflows/test.yml/badge.svg)](https://github.com/NaijaAI/sabiyarn/actions/workflows/test.yml)
 
