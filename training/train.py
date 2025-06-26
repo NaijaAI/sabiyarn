@@ -10,7 +10,7 @@ import structlog
 # from torch.nn.parallel import DistributedDataParallel as DDP
 # import torch.distributed as dist
 # from torch.distributed import init_process_group, destroy_process_group
-# from torch.nn import functional as F
+from torch.nn import functional as F
 
 from ..data import prepare
 from ..sabiyarn.model import ModelArgs, SabiYarn, MoeArgs

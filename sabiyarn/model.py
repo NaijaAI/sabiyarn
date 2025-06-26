@@ -1,15 +1,16 @@
 import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
+from enum import Enum
 
-import fairscale.nn.model_parallel.initialize as fs_init
-import torch
-import torch.nn.functional as F
-from fairscale.nn.model_parallel.layers import (
-    ColumnParallelLinear,
-    ParallelEmbedding,
-    RowParallelLinear,
-)
+# import fairscale.nn.model_parallel.initialize as fs_init
+# import torch
+# import torch.nn.functional as F
+# from fairscale.nn.model_parallel.layers import (
+#     ColumnParallelLinear,
+#     ParallelEmbedding,
+#     RowParallelLinear,
+# )
 
 from torch import nn
 
@@ -17,6 +18,13 @@ from .moe import MoeLayer, MoeArgs
 from typing import Optional
 from .memory_reasoning import LogicNetwork
 from .differential_attention import DiffAttention, DiffAttnArgs
+from .MLA import MLA, MLAConfig
+
+
+class AttentionType(str, Enum):
+    SELF_ATTENTION = "self_attention"
+    DIFFERENTIAL_ATTENTION = "differential_attention"
+    MLA = "MLA"
 
 
 @dataclass
@@ -34,8 +42,9 @@ class ModelArgs:
     max_batch_size: int = 32
     max_seq_len: int = 2048
     use_j: bool = True
-    attention_type: str = "differential_attention"
+    attention_type: str = AttentionType.SELF_ATTENTION
     diff_attn_args: Optional[DiffAttnArgs] = None
+    mla_config: Optional[MLAConfig] = None
 
 
 class RMSNorm(torch.nn.Module):
@@ -370,8 +379,7 @@ class TransformerBlock(nn.Module):
     def __init__(
         self,
         layer_id: int,
-        args: ModelArgs,
-        diff_attn_args: Optional[DiffAttnArgs] = None,
+        args: ModelArgs
     ):
         """
         Initialize a TransformerBlock.
@@ -396,10 +404,15 @@ class TransformerBlock(nn.Module):
         self.dim = args.dim
         self.head_dim = args.dim // args.n_heads
         self.layer_id = layer_id
-        if args.diff_attn_args is not None:
-            diff_attn_args = args.diff_attn_args
-            diff_attn_args.depth = self.layer_id
-            self.attention = DiffAttention(diff_attn_args)
+        # instantiate attention layers
+        if (args.attention_type == AttentionType.DIFFERENTIAL_ATTENTION and 
+                args.diff_attn_args is not None):
+            args.diff_attn_args.depth = self.layer_id
+            self.attention = DiffAttention(args.diff_attn_args)
+        
+        elif (args.attention_type == AttentionType.MLA and
+              args.mla_config is not None):
+            self.attention = MLA(args.mla_config)
         else:
             self.attention = Attention(args)
         if args.moe is not None:
@@ -454,7 +467,10 @@ class TransformerBlock(nn.Module):
             torch.Tensor: Output tensor after applying attention and feedforward layers.
 
         """
-        h = x + self.attention(self.attention_norm(x), start_pos, freqs_cis, mask)
+        if isinstance(self.attention, MLA):
+            h = x + self.attention(x, start_pos, mask)
+        else:
+            h = x + self.attention(self.attention_norm(x), start_pos, freqs_cis, mask)
         if self.logic_network:
             h *= self.logic_gate(h)
 
@@ -487,10 +503,16 @@ class TransformerBlockJ(nn.Module):
         self.dim = args.dim
         self.head_dim = args.dim // args.n_heads
         self.layer_id = layer_id
-        if args.diff_attn_args is not None:
-            diff_attn_args = args.diff_attn_args
-            diff_attn_args.depth = self.layer_id
+
+        # instantiate attention layers
+        if (args.attention_type == AttentionType.DIFFERENTIAL_ATTENTION and
+                args.diff_attn_args is not None):
+            args.diff_attn_args.depth = self.layer_id
             self.attention = DiffAttention(args.diff_attn_args)
+
+        elif (args.attention_type == AttentionType.MLA and
+              args.mla_config is not None):
+            self.attention = MLA(args.mla_config)
         else:
             self.attention = Attention(args)
         self.linear_j = nn.Linear(args.dim, args.dim)
@@ -547,12 +569,16 @@ class TransformerBlockJ(nn.Module):
             torch.Tensor: Output tensor after applying attention and feedforward layers.
 
         """
-        x_norm = self.attention_norm(x)
-        h = (
-            x
-            + self.attention(x_norm, start_pos, freqs_cis, mask)
-            + self.linear_j(x_norm)
-        )
+
+        if isinstance(self.attention, MLA):
+            h = x + self.attention(x, start_pos, mask)
+        else:
+            x_norm = self.attention_norm(x)
+            h = (
+                x
+                + self.attention(x_norm, start_pos, freqs_cis, mask)
+                + self.linear_j(x_norm)
+            )
 
         if self.logic_network:
             h *= self.logic_gate(h)
@@ -562,7 +588,7 @@ class TransformerBlockJ(nn.Module):
 
 
 class SabiYarn(nn.Module):
-    def __init__(self, params: ModelArgs, diff_attn_args: DiffAttnArgs = None):
+    def __init__(self, params: ModelArgs):
         """
         Initialize a Transformer model.
 
@@ -605,14 +631,14 @@ class SabiYarn(nn.Module):
             params.vocab_size,
             bias=False,
         )
-        if params.attention_type == "self_attention":
+        if params.attention_type == AttentionType.SELF_ATTENTION:
             self.freqs_cis = precompute_freqs_cis(
                 # Note that self.params.max_seq_len is multiplied by 2 because the token limit for the Llama 2 generation of models is 4096.
                 # Adding this multiplier instead of using 4096 directly allows for dynamism of token lengths while training or fine-tuning.
                 self.params.dim // self.params.n_heads,
                 self.params.max_seq_len * 2,
             )
-        elif params.attention_type == "differential_attention":
+        elif params.attention_type == AttentionType.DIFFERENTIAL_ATTENTION:
             self.freqs_cis = precompute_freqs_cis(
                 # Note that self.params.max_seq_len is multiplied by 2
                 # because the token limit for the Llama 2 generation of models is 4096.
@@ -676,26 +702,30 @@ class SabiYarn(nn.Module):
         """
         _bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
-        self.freqs_cis = self.freqs_cis.to(h.device)
-        freqs_cis = self.freqs_cis[start_pos: start_pos + seqlen]
+        if self.params.attention_type == AttentionType.MLA:
+            for layer in self.layers:
+                h = layer(h, start_pos, mask)
+        else:
+            self.freqs_cis = self.freqs_cis.to(h.device)
+            freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
 
-        if mask is None:
-            if seqlen > 1:
-                mask = torch.full((seqlen, seqlen), float("-inf"),
-                                  device=tokens.device)
+            if mask is None:
+                if seqlen > 1:
+                    mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
 
-                mask = torch.triu(mask, diagonal=1)
+                    mask = torch.triu(mask, diagonal=1)
 
-                # When performing key-value caching, we compute the attention scores
-                # only for the new sequence. Thus, the matrix of scores is of size
-                # (seqlen, cache_len + seqlen), and the only masked entries are (i, j) for
-                # j > cache_len + i, since row i corresponds to token cache_len + i.
-                mask = torch.hstack(
-                    [torch.zeros((seqlen, start_pos), device=tokens.device), mask]
-                ).type_as(h)
+                    # When performing key-value caching, we compute the attention scores
+                    # only for the new sequence. Thus, the matrix of scores is of size
+                    # (seqlen, cache_len + seqlen), and the only masked entries are (i, j) for
+                    # j > cache_len + i, since row i corresponds to token cache_len + i.
+                    mask = torch.hstack(
+                        [torch.zeros((seqlen, start_pos), device=tokens.device), mask]
+                    ).type_as(h)
 
-        for layer in self.layers:
-            h = layer(h, start_pos, freqs_cis, mask)
+            for layer in self.layers:
+                h = layer(h, start_pos, freqs_cis, mask)
+        
         hidden_states = self.norm(h)
         logits = self.lm_head(hidden_states).float()
         return hidden_states, logits
