@@ -21,7 +21,7 @@ jobs:
           pip install pytest modal
 
       - name: Setup Modal
-        run: modal 
+        run: modal setup --help
      
       - name: Run tests
         run: pytest sabiyarn/
