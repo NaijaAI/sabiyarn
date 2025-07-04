@@ -19,6 +19,7 @@ gemm_impl: Literal["bf16", "fp8"] = "bf16"
 class MLAConfig:
     hidden_size: int
     num_heads: int
+    max_batch_size: int
     original_seq_len: int #Original sequence length.  
     max_seq_len: int # Maximum sequence length.
     rope_theta: float  # frequency, usually large
@@ -398,6 +399,8 @@ class MLA(nn.Module):
             mscale = 0.1 * config.mscale * math.log(config.rope_factor) + 1.0
             self.softmax_scale = self.softmax_scale * mscale * mscale
         
+        self.register_buffer("kv_cache", torch.zeros(config.max_batch_size, config.max_seq_len, self.kv_lora_rank), persistent=False)
+        self.register_buffer("pe_cache", torch.zeros(config.max_batch_size, config.max_seq_len, self.qk_rope_head_dim), persistent=False)     
 
     def forward(self, hidden_states, start_pos, freqs_cis, attention_mask: Optional[torch.Tensor] = None):
         """
@@ -434,7 +437,7 @@ class MLA(nn.Module):
         c_kv, k_rope = torch.split(
             c_kv, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1
         )  # k_rope shape: (b, seq_len, self.qk_rope_head_dim)
-        k_rope = apply_rotary_emb(k_rope.unsqueze(2), freqs_cis)
+        k_rope = apply_rotary_emb(k_rope.unsqueeze(2), freqs_cis)
 
         kv_up_proj = self.kv_up_proj.weight if self.kv_up_proj.scale is None else weight_dequant(self.kv_up_proj.weight, self.kv_up_proj.scale, block_size)
         kv_up_proj = kv_up_proj.view(self.n_local_heads, -1, self.kv_lora_rank)
@@ -444,7 +447,11 @@ class MLA(nn.Module):
         scores = (torch.einsum("bshc,btc->bsht", q_nope, self.kv_cache[:bsz, :end_pos]) +
                       torch.einsum("bshr,btr->bsht", q_rope, self.pe_cache[:bsz, :end_pos])) * self.softmax_scale
         if attention_mask is not None:
-            scores = torch.masked_fill(scores, attention_mask == 0, float("-inf"))
+            scores = scores.masked_fill(attention_mask == 0, float("-inf"))
+        else:
+            q_len = scores.size(2)
+            k_len = self.kv_cache.size(2)
+            scores = scores[:, :, :q_len, :k_len]
         scores = F.softmax(scores, dim=-1).type_as(hidden_states)
         # scores = F.dropout(scores, p=self.attention_dropout, training=self.training)
         output = torch.einsum("bsht,btc->bshc", scores, self.kv_cache[:bsz, :end_pos])
@@ -460,6 +467,7 @@ def test_mla():
         hidden_size=7168,
         num_heads=16,
         max_seq_len=1024*4,
+        max_batch_size=2,
         attention_dropout=0.1,
         #mla
         q_lora_rank=1536,
@@ -478,14 +486,16 @@ def test_mla():
     )
     mla = MLA(config)
     x = torch.randn(2, 1024, 7168)
-    position_ids = (
-        torch.arange(
-            config.original_seq_len,
-        )
-        .unsqueeze(0)
-        .expand(x.size(0), -1)
-    )  # (batch_size, seq_len)
-    attn_output, attn_weights = mla(x, position_ids=position_ids)
+    start_pos = 0
+    freqs_cis = precompute_freqs_cis(config)
+    # position_ids = (
+    #     torch.arange(
+    #         config.original_seq_len,
+    #     )
+    #     .unsqueeze(0)
+    #     .expand(x.size(0), -1)
+    # )  # (batch_size, seq_len)
+    attn_output, attn_weights = mla(x, start_pos, freqs_cis)
     print(attn_output.shape)
     print(attn_weights.shape)
 
