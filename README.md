@@ -16,12 +16,19 @@ SabiYarn is a research codebase for pretraining, fine-tuning, and running infere
 
 ## Quickstart
 
-### 1. Install Requirements
+### Create a virtual env
 ```bash
-pip install -r requirements.txt
+curl -LsSf https://astral.sh/uv/install.sh | sh #install uv
+surce ~/.bashrc #restart your shell
+uv venv #create venv
+source .venv/bin/activate # activate the venv
+```
+### 2. Install Requirements
+```bash
+uv pip install -r requirements.txt
 ```
 
-### 2. Run Model Tests
+### 3. Run Model Tests
 Run the included test for MLA (Multi-Head Latent Attention):
 ```bash
 python sabiyarn/MLA.py
