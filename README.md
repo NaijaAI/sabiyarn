@@ -10,6 +10,7 @@ SabiYarn is a research codebase for pretraining, fine-tuning, and running infere
 - Modular transformer architecture (see `sabiyarn/model.py`)
 - Support for rotary embeddings, LoRA, and MoE
 - Multi-Head Latent Attention (MLA) module (`sabiyarn/MLA.py`)
+- Differential Attention module (`sabiyarn/differential_attention.py`)
 - Utilities for pretraining, fine-tuning, and inference
 - Designed for use with [Modal](https://modal.com/) for scalable training and inference
 - Test suite for model forward pass and attention modules
@@ -29,9 +30,12 @@ uv pip install -r requirements.txt
 ```
 
 ### 3. Run Model Tests
-Run the included test for MLA (Multi-Head Latent Attention):
+Run the included tests:
 ```bash
-python sabiyarn/MLA.py
+python tests/test_diff_attn.py
+python tests/test_mha.py
+python tests/test_mla.py
+python tests/test_model_initialization.py
 ```
 
 Add more tests in `sabiyarn/test.py` as needed.
