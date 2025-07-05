@@ -17,6 +17,8 @@ SabiYarn is a research codebase for pretraining, fine-tuning, and running infere
 
 ## Quickstart
 
+**The triton kernels for distributed training require that the code be run on a GPU compatible machine. It is highly recommended to run the code on a GPU machine**
+
 ### Create a virtual env
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh #install uv
@@ -35,7 +37,7 @@ Run the included tests:
 python tests/test_diff_attn.py
 python tests/test_mha.py
 python tests/test_mla.py
-python tests/test_model_initialization.py
+python tests/test_model_initialization.py 
 ```
 
 Add more tests in `sabiyarn/test.py` as needed.
