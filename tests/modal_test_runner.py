@@ -17,7 +17,11 @@ project_root = os.path.join(os.path.dirname(__file__), '..')
 sys.path.insert(0, project_root)
 
 # Create Modal app with custom image that includes dependencies
-image = modal.Image.debian_slim(python_version="3.10").pip_install_from_requirements("requirements.txt")
+image = (
+    modal.Image.debian_slim(python_version="3.10")
+    .pip_install_from_requirements("requirements.txt")
+    .copy_local_dir(".", "/root/app")
+)
 
 app = modal.App("sabiyarn-tests")
 
@@ -31,8 +35,8 @@ def run_tests_on_gpu():
     import os
     import torch
     
-    # Add the project root to path
-    project_root = os.path.join(os.path.dirname(__file__), '..')
+    # Add the project root to path (code is copied to /root/app in Modal)
+    project_root = "/root/app"
     sys.path.insert(0, project_root)
     
     # Now import the GPU-dependent modules (this happens on GPU)
