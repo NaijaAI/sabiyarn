@@ -23,5 +23,5 @@ jobs:
       - name: Setup Modal
         run: modal token set --token-id ${{ secrets.MODAL_TOKEN_ID }} --token-secret ${{ secrets.MODAL_TOKEN_SECRET }}
      
-      - name: Run tests
-        run: modal run tests/test_model_initialization.py
+      - name: Run tests on Modal GPU
+        run: modal run tests/modal_test_runner.py
