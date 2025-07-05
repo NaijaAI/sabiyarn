@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 from dataclasses import dataclass
 from typing import Tuple, Optional, Literal
-from kernel import act_quant, weight_dequant, fp8_gemm
+from .kernel import act_quant, weight_dequant, fp8_gemm
 import math
 
 world_size = 1 # the number of GPUs
@@ -57,6 +57,10 @@ def linear(x: torch.Tensor, weight: torch.Tensor, bias: Optional[torch.Tensor] =
         - If `gemm_impl == "bf16"`, dequantization and a `bf16` GEMM operation are applied.
         - For other cases, the function applies quantization to `x` and uses `fp8_gemm` for computation.
     """
+    # Ensure input and weight have the same dtype
+    if x.dtype != weight.dtype:
+        x = x.to(weight.dtype)
+    
     if weight.element_size() > 1:
         return F.linear(x, weight, bias)
     elif gemm_impl == "bf16":
@@ -93,7 +97,7 @@ class Linear(nn.Module):
         else:
             self.register_parameter("scale", None)
         if bias:
-            self.bias = nn.Parameter(torch.empty(out_features))
+            self.bias = nn.Parameter(torch.empty(out_features, dtype=dtype or Linear.dtype))
         else:
             self.register_parameter("bias", None)
 
@@ -186,44 +190,11 @@ class DeepseekV2RMSNorm(nn.Module):
         Returns:
             torch.Tensor: Normalized tensor with the same shape as input.
         """
-        return F.rms_norm(hidden_states, (self.dim,), self.weight, self.eps)
-
-class DeepseekV2RotaryEmbedding(nn.Module):
-    def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None):
-        super().__init__()
-        self.dim = dim
-        self.max_position_embeddings = max_position_embeddings
-        self.base = base
-        inv_freq = 1.0 / (
-            self.base ** (torch.arange(0, self.dim, 2).float().to(device) / self.dim)
-        )
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
-        self._set_cos_sin_cache(
-            seq_len=max_position_embeddings,
-            device=self.inv_freq.device,
-            dtype=torch.get_default_dtype(),
-        )
-        self.max_seq_len_cached = None
-
-    def _set_cos_sin_cache(self, seq_len, device, dtype):
-        self.max_seq_len_cached = seq_len
-        t = torch.arange(
-            self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype
-        )
-        freqs = torch.outer(t, self.inv_freq.to(t.device))
-        # use a different permutation to obtain same calculation
-        emb = torch.cat((freqs, freqs), dim=-1)
-        self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
-        self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
-
-    def forward(self, x, seq_len=None):
-        # x: [bs, num_attention_heads, seq_len, head_size]
-        if self.max_seq_len_cached is None or seq_len > self.max_seq_len_cached:
-            self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
-        return (
-            self.cos_cached[:seq_len].to(dtype=x.dtype),
-            self.sin_cached[:seq_len].to(dtype=x.dtype),
-        )
+        # return F.rms_norm(hidden_states, (self.dim,), self.weight, self.eps)
+        # # Custom RMS norm implementation
+        variance = hidden_states.pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.eps)
+        return self.weight * hidden_states
 
 def precompute_freqs_cis(args: MLAConfig) -> torch.Tensor:
     """
@@ -300,7 +271,7 @@ def precompute_freqs_cis(args: MLAConfig) -> torch.Tensor:
         smooth = 1 - linear_ramp_factor(low, high, dim // 2)
         freqs = freqs / factor * (1 - smooth) + freqs * smooth
 
-    t = torch.arange(seqlen)
+    t = torch.arange(seqlen, dtype=torch.float32)
     freqs = torch.outer(t, freqs)
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
     return freqs_cis
@@ -318,9 +289,16 @@ def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
         torch.Tensor: Tensor with rotary embeddings applied.
     """
     dtype = x.dtype
-    x = torch.view_as_complex(x.float().view(*x.shape[:-1], -1, 2))
-    freqs_cis = freqs_cis.view(1, x.size(1), 1, x.size(-1))
-    y = torch.view_as_real(x * freqs_cis).flatten(3)
+    # Convert to float32 for complex operations
+    x_float = x.float()
+    x_complex = torch.view_as_complex(x_float.view(*x_float.shape[:-1], -1, 2))
+    
+    # Slice freqs_cis to match the actual sequence length
+    seq_len = x_complex.size(1)
+    freqs_cis = freqs_cis[:seq_len]  # Take only the needed sequence positions
+    freqs_cis = freqs_cis.view(1, seq_len, 1, x_complex.size(-1))
+    
+    y = torch.view_as_real(x_complex * freqs_cis).flatten(3)
     return y.to(dtype)
 
 class MLA(nn.Module):
@@ -363,6 +341,7 @@ class MLA(nn.Module):
             self.hidden_size,
             self.q_lora_rank,
             bias=config.attention_bias,
+            dtype=torch.bfloat16,
         )
         self.q_down_norm = DeepseekV2RMSNorm(self.q_lora_rank)
 
@@ -370,6 +349,7 @@ class MLA(nn.Module):
             self.hidden_size,
             self.kv_lora_rank + config.qk_rope_head_dim,
             bias=config.attention_bias,
+            dtype=torch.bfloat16,
         )  # qk_rope_head_dim usually 64
         self.kv_down_norm = DeepseekV2RMSNorm(self.kv_lora_rank)
         # after down, two parts, need to split
@@ -387,40 +367,33 @@ class MLA(nn.Module):
             ),  
         )
 
-        # 3. rope
-        self.rotary_emb = DeepseekV2RotaryEmbedding(
-            config.qk_rope_head_dim,
-            config.original_seq_len,
-            config.rope_theta,
-        )
-
         self.softmax_scale = self.qk_head_dim**0.5
         if config.max_seq_len > config.original_seq_len:
             mscale = 0.1 * config.mscale * math.log(config.rope_factor) + 1.0
             self.softmax_scale = self.softmax_scale * mscale * mscale
         
-        self.register_buffer("kv_cache", torch.zeros(config.max_batch_size, config.max_seq_len, self.kv_lora_rank), persistent=False)
-        self.register_buffer("pe_cache", torch.zeros(config.max_batch_size, config.max_seq_len, self.qk_rope_head_dim), persistent=False)     
+        self.register_buffer("kv_cache", torch.zeros(config.max_batch_size, config.max_seq_len, self.kv_lora_rank, dtype=torch.bfloat16), persistent=False)
+        self.register_buffer("pe_cache", torch.zeros(config.max_batch_size, config.max_seq_len, self.qk_rope_head_dim, dtype=torch.bfloat16), persistent=False)     
 
-    def forward(self, hidden_states, start_pos, freqs_cis, attention_mask: Optional[torch.Tensor] = None):
+    def forward(self, x: torch.Tensor, start_pos: int, freqs_cis: torch.Tensor, mask: Optional[torch.Tensor] = None):
         """
         Forward pass for the Multi-Head Latent Attention (MLA) Layer.
 
         Args:
-            hidden states (torch.Tensor): Input tensor of shape (batch_size, seq_len, dim).
+            x (torch.Tensor): Input tensor of shape (batch_size, seq_len, dim).
             start_pos (int): Starting position in the sequence for caching.
             freqs_cis (torch.Tensor): Precomputed complex exponential values for rotary embeddings.
-            attention mask (Optional[torch.Tensor]): Mask tensor to exclude certain positions from attention.
+            mask (Optional[torch.Tensor]): Mask tensor to exclude certain positions from attention.
 
         Returns:
-            torch.Tensor: Output tensor with the same shape as the input.
+            Tuple[torch.Tensor, torch.Tensor]: Output tensor and attention weights.
         """
-        # hidden_states (b, seq_len, hidden_dim)
-        bsz, q_len, _ = hidden_states.size()
+        # x (b, seq_len, hidden_dim)
+        bsz, q_len, _ = x.size()
         end_pos = start_pos + q_len
 
         # 1. q compression
-        q = self.q_down_proj(hidden_states)
+        q = self.q_down_proj(x)
         q = self.q_down_norm(q)
         q = self.q_up_proj(q)# q shape: self.num_heads * self.qk_head_dim,(b, seq_len, self.num_heads * self.qk_head_dim,)
         q = q.view(bsz, q_len, self.n_local_heads, self.qk_head_dim)#.transpose(1, 2)
@@ -433,7 +406,7 @@ class MLA(nn.Module):
         
         # kv part
         # c_kv: compressed kv
-        c_kv = self.kv_down_proj(hidden_states)
+        c_kv = self.kv_down_proj(x)
         c_kv, k_rope = torch.split(
             c_kv, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1
         )  # k_rope shape: (b, seq_len, self.qk_rope_head_dim)
@@ -444,60 +417,31 @@ class MLA(nn.Module):
         q_nope = torch.einsum("bshd,hdc->bshc", q_nope, kv_up_proj[:, :self.qk_nope_head_dim])
         self.kv_cache[:bsz, start_pos:end_pos] = self.kv_down_norm(c_kv)
         self.pe_cache[:bsz, start_pos:end_pos] = k_rope.squeeze(2)
-        scores = (torch.einsum("bshc,btc->bsht", q_nope, self.kv_cache[:bsz, :end_pos]) +
-                      torch.einsum("bshr,btr->bsht", q_rope, self.pe_cache[:bsz, :end_pos])) * self.softmax_scale
-        if attention_mask is not None:
-            scores = scores.masked_fill(attention_mask == 0, float("-inf"))
+        
+        # Transpose query tensors to have correct dimension order for einsum
+        q_nope = q_nope.transpose(1, 2)  # (batch_size, num_heads, seq_len, head_dim)
+        q_rope = q_rope.transpose(1, 2)  # (batch_size, num_heads, seq_len, head_dim)
+        
+        scores = (torch.einsum("bhsc,btc->bhst", q_nope, self.kv_cache[:bsz, :end_pos]) +
+                      torch.einsum("bhsr,btr->bhst", q_rope, self.pe_cache[:bsz, :end_pos])) * self.softmax_scale
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, float("-inf"))
         else:
+            # Causal mask: only allow attending to current and previous positions
             q_len = scores.size(2)
-            k_len = self.kv_cache.size(2)
-            scores = scores[:, :, :q_len, :k_len]
-        scores = F.softmax(scores, dim=-1).type_as(hidden_states)
+            k_len = scores.size(3)
+            causal_mask = torch.tril(torch.ones((q_len, k_len), device=scores.device, dtype=torch.bool))
+            scores = scores.masked_fill(~causal_mask, float("-inf"))
+        
+        scores = F.softmax(scores, dim=-1).type_as(x)
         # scores = F.dropout(scores, p=self.attention_dropout, training=self.training)
-        output = torch.einsum("bsht,btc->bshc", scores, self.kv_cache[:bsz, :end_pos])
-        output = torch.einsum("bshc,hdc->bshd", output, kv_up_proj[:, -self.v_head_dim:])
-        output = output.view(bsz, q_len, -1)
+        
+        # Project kv_cache through up-projection to get the full value representations
+        kv_cache_projected = torch.einsum("btc,hdc->bhtd", self.kv_cache[:bsz, :end_pos], kv_up_proj[:, -self.v_head_dim:])
+        
+        output = torch.einsum("bhst,bhtd->bhsd", scores, kv_cache_projected)
+        output = output.transpose(1, 2).flatten(2)  # Transpose back and flatten
         output = self.out_proj(output)
-        return output, scores
+        return output
 
 
-# ----
-def test_mla():
-    config = MLAConfig(
-        hidden_size=7168,
-        num_heads=16,
-        max_seq_len=1024*4,
-        max_batch_size=2,
-        attention_dropout=0.1,
-        #mla
-        q_lora_rank=1536,
-        qk_rope_head_dim=64,
-        kv_lora_rank=512,
-        v_head_dim=128,
-        qk_nope_head_dim=128,
-        attention_bias=False,
-        # yarn
-        original_seq_len= 4096,
-        rope_theta = 10000.0,
-        rope_factor = 40,
-        beta_fast = 32,
-        beta_slow = 1,
-        mscale = 1.
-    )
-    mla = MLA(config)
-    x = torch.randn(2, 1024, 7168)
-    start_pos = 0
-    freqs_cis = precompute_freqs_cis(config)
-    # position_ids = (
-    #     torch.arange(
-    #         config.original_seq_len,
-    #     )
-    #     .unsqueeze(0)
-    #     .expand(x.size(0), -1)
-    # )  # (batch_size, seq_len)
-    attn_output, attn_weights = mla(x, start_pos, freqs_cis)
-    print(attn_output.shape)
-    print(attn_weights.shape)
-
-
-test_mla()
