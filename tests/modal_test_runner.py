@@ -16,10 +16,12 @@ import os
 project_root = os.path.join(os.path.dirname(__file__), '..')
 sys.path.insert(0, project_root)
 
-# Create Modal app
+# Create Modal app with custom image that includes dependencies
+image = modal.Image.debian_slim(python_version="3.10").pip_install_from_requirements("requirements.txt")
+
 app = modal.App("sabiyarn-tests")
 
-@app.function(gpu="A10G", timeout=800)
+@app.function(gpu="A10G", timeout=800, image=image)
 def run_tests_on_gpu():
     """
     Run all tests on Modal GPU instance.
