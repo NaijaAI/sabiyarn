@@ -132,6 +132,7 @@ class ModelArgs:
     max_batch_size: int = 32
     max_seq_len: int = 2048
     use_j: bool = True
+    tie_weights: bool = True
     attention_type: str = AttentionType.SELF_ATTENTION
     diff_attn_args: Optional[DiffAttnArgs] = None
     mla_config: Optional[MLAConfig] = None
@@ -385,6 +386,9 @@ class SabiYarn(nn.Module):
             params.vocab_size,
             bias=False,
         )
+        if params.tie_weights == True:
+            self.lm_head.weight = self.tok_embeddings.weight
+
         # Precompute frequencies for non-MLA attention types
         if params.attention_type == AttentionType.SELF_ATTENTION:
             from .MHA import precompute_freqs_cis

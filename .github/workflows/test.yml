@@ -17,7 +17,6 @@ jobs:
           python-version: '3.10'
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
           pip install pytest modal
 
       - name: Setup Modal
