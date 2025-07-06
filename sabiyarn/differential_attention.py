@@ -17,7 +17,7 @@ class DiffAttnArgs:
     embed_dim: int = 4096
     n_kv_heads: Optional[int] = None
     max_seq_len: int = 2048
-    norm_eps: int = 1e-5
+    norm_eps: float = 1e-5
 
 
 class RMSNorm(torch.nn.Module):
