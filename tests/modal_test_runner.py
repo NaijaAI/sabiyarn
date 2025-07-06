@@ -387,7 +387,7 @@ def run_tests_on_gpu():
             print("✅ Differential attention module created")
                 
             # Test MLA creation
-            mla_config = MLAConfig(
+            mla_cfg = MLAConfig(
                 hidden_size=256,
                 num_heads=8,
                 max_seq_len=32,
