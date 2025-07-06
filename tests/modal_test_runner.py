@@ -46,28 +46,60 @@ def run_tests_on_gpu():
     
     # Try to import cut_cross_entropy, skip test if not available
     try:
-        from sabiyarn.cut_cross_entropy import cut_cross_entropy_loss
+        from cut_cross_entropy import linear_cross_entropy
         CCE_AVAILABLE = True
     except ImportError:
         CCE_AVAILABLE = False
-        cut_cross_entropy_loss = None
+        linear_cross_entropy = None
     
     def test_cut_cross_entropy():
         """Test cut cross entropy loss function."""
-        if not CCE_AVAILABLE or cut_cross_entropy_loss is None:
+        if not CCE_AVAILABLE or linear_cross_entropy is None:
             print("⚠️ Cut Cross Entropy module not available, skipping test")
             return True
         
         print("🧪 Testing Cut Cross Entropy...")
         try:
-            logits = torch.randn(4, 10, 100)
-            targets = torch.randint(0, 100, (4, 10))
-            loss = cut_cross_entropy_loss(logits, targets)
+            # Create test embeddings and classifier weights  
+            batch_size, seq_len, embed_dim = 4, 10, 128
+            vocab_size = 100
+            
+            # Create embeddings (e) and classifier weights (c) 
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            
+            if device == "cpu":
+                print("⚠️ CUDA not available, using torch_compile implementation")
+                # Use torch_compile implementation for CPU
+                e = torch.randn(batch_size, seq_len, embed_dim)  # embeddings
+                c = torch.randn(vocab_size, embed_dim)  # classifier weights
+                targets = torch.randint(0, vocab_size, (batch_size, seq_len))
+                
+                # Force torch_compile implementation
+                loss = linear_cross_entropy(e, c, targets, impl="torch_compile")
+            else:
+                print(f"✅ Using GPU ({device}) with CCE implementation")
+                # Use GPU tensors for CCE implementation
+                e = torch.randn(batch_size, seq_len, embed_dim, device=device)  # embeddings
+                c = torch.randn(vocab_size, embed_dim, device=device)  # classifier weights
+                targets = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
+                
+                # Use default CCE implementation
+                loss = linear_cross_entropy(e, c, targets)
+            
             assert loss.item() > 0, "Loss should be positive"
+            assert torch.isfinite(loss), "Loss should be finite"
+            
+            print(f"   Device: {device}")
+            print(f"   Embeddings shape: {e.shape}")
+            print(f"   Classifier weights shape: {c.shape}")  
+            print(f"   Targets shape: {targets.shape}")
+            print(f"   Loss value: {loss.item():.4f}")
             print("✅ Cut Cross Entropy test passed!")
             return True
         except Exception as e:
             print(f"❌ Cut Cross Entropy test failed: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def test_mha_model_initialization():
@@ -209,9 +241,15 @@ def run_tests_on_gpu():
             model = SabiYarn(config)
             print(f"✅ MLA model created: {model.get_model_size()}")
             
-            # Test forward pass
+            # Test forward pass with proper dtype handling
             tokens = torch.randint(0, 1000, (1, 16))
-            hidden_states, logits = model(tokens, start_pos=0)
+            
+            # Set model to eval mode and ensure consistent dtype
+            model.eval()
+            with torch.no_grad():
+                # Convert model to float32 to avoid dtype mismatch
+                model = model.float()
+                hidden_states, logits = model(tokens, start_pos=0)
             
             print(f"   Input: {tokens.shape}")
             print(f"   Hidden states: {hidden_states.shape}")
@@ -219,9 +257,9 @@ def run_tests_on_gpu():
             
             expected_hidden = (1, 16, 256)
             expected_logits = (1, 16, 1000)
-            
-            assert hidden_states.shape == expected_hidden, f"Hidden states shape mismatch"
-            assert logits.shape == expected_logits, f"Logits shape mismatch"
+        
+            assert hidden_states.shape == expected_hidden, f"Hidden states shape mismatch: {hidden_states.shape} vs {expected_hidden}"
+            assert logits.shape == expected_logits, f"Logits shape mismatch: {logits.shape} vs {expected_logits}"
             
             print("✅ MLA model test passed!")
             return True
@@ -261,15 +299,17 @@ def run_tests_on_gpu():
             config = ModelArgs(
                 dim=256,
                 n_layers=2,
-                n_heads=8,
+                n_heads=8,  # Match mla_config.num_heads
                 vocab_size=1000,
                 max_batch_size=2,
                 max_seq_len=32,
                 attention_type=AttentionType.MLA,
+                mla_config=mla_config,
                 moe=True,
                 n_routed_experts=8,
                 n_activated_experts=2,
-                mla_config=mla_config
+                moe_inter_dim=512,
+                n_shared_experts=1
             )
             
             # Initialize model
@@ -278,7 +318,12 @@ def run_tests_on_gpu():
             
             # Test forward pass
             tokens = torch.randint(0, 1000, (1, 16))
-            hidden_states, logits = model(tokens, start_pos=0)
+            # Set model to eval mode and ensure consistent dtype
+            model.eval()
+            with torch.no_grad():
+                # Convert model to float32 to avoid dtype mismatch
+                model = model.float()
+                hidden_states, logits = model(tokens, start_pos=0)
             
             print(f"   Input: {tokens.shape}")
             print(f"   Hidden states: {hidden_states.shape}")
@@ -287,8 +332,16 @@ def run_tests_on_gpu():
             expected_hidden = (1, 16, 256)
             expected_logits = (1, 16, 1000)
             
-            assert hidden_states.shape == expected_hidden, f"Hidden states shape mismatch"
-            assert logits.shape == expected_logits, f"Logits shape mismatch"
+            assert hidden_states.shape == expected_hidden, f"Hidden states shape mismatch: {hidden_states.shape} vs {expected_logits}"
+            assert logits.shape == expected_logits, f"Logits shape mismatch: {logits.shape} vs {expected_logits}"
+            
+            # Verify MoE is being used
+            first_layer = model.layers[0]
+            assert hasattr(first_layer, 'attention'), "Layer should have attention component"
+            assert hasattr(first_layer, 'feed_forward'), "Layer should have MoE feed_forward component"
+            
+            from sabiyarn.moe import MoE
+            assert isinstance(first_layer.feed_forward, MoE), "Should be using MoE for feed_forward"
             
             print("✅ MLA + MoE model test passed!")
             return True
@@ -314,7 +367,25 @@ def run_tests_on_gpu():
             )
             mha_attention = _create_attention(0, mha_config)
             print("✅ MHA attention module created")
-            
+
+            # Test Differential Attention creation
+            diff_args = DiffAttnArgs(
+                depth=0,
+                max_batch_size=2,
+                n_heads=8,
+                embed_dim=256,
+                n_kv_heads=4,
+                max_seq_len=32,
+                norm_eps=1e-5
+            )
+            diff_config = ModelArgs(
+                dim=256,
+                attention_type=AttentionType.DIFFERENTIAL_ATTENTION,
+                diff_attn_args=diff_args
+            )
+            diff_attention = _create_attention(0, diff_config)
+            print("✅ Differential attention module created")
+                
             # Test MLA creation
             mla_config = MLAConfig(
                 hidden_size=256,
@@ -334,6 +405,12 @@ def run_tests_on_gpu():
                 beta_fast=32,
                 beta_slow=1,
                 mscale=1.
+            )
+            mla_config = ModelArgs(
+                dim=256,
+                n_heads=8,  # Match mla_cfg.num_heads
+                attention_type=AttentionType.MLA,
+                mla_config=mla_cfg
             )
             mla_attention = _create_attention(0, mla_config)
             print("✅ MLA attention module created")
