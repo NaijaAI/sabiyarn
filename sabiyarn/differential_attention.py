@@ -207,7 +207,7 @@ class DiffAttention(nn.Module):
             (args.max_batch_size, args.max_seq_len, args.n_heads, self.head_dim * 2)
         )
 
-        self.lambda_init = lambda_init_fn(self.depth)
+        self.lambda_init = lambda_init_fn(self.depth if self.depth is not None else 1)
         self.lambda_q1 = nn.Parameter(
             torch.normal(mean=0, std=0.1, size=(self.head_dim,), dtype=torch.float32)
         )
@@ -231,7 +231,7 @@ class DiffAttention(nn.Module):
         x: torch.Tensor,
         start_pos: int,
         freqs_cis: torch.Tensor,
-        attn_mask: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None,
     ):
         """
         Forward pass of the differential attention module.
@@ -273,14 +273,15 @@ class DiffAttention(nn.Module):
         values = v.transpose(1, 2)
 
         attn_scores = torch.matmul(q, keys.transpose(2, 3))
-        if attn_mask is None:
-            attn_mask = torch.triu(
-                torch.zeros((tgt_len, tgt_len)).float().type_as(attn_scores),
+        if mask is None:
+            # Create proper causal mask with -inf for future positions
+            mask = torch.triu(
+                torch.ones((tgt_len, tgt_len), device=attn_scores.device) * float('-inf'),
                 diagonal=1 + offset,
-            ).to("cuda")
-
+            )
+        
         attn_scores = torch.nan_to_num(attn_scores)
-        attn_scores += attn_mask.to("cuda")
+        attn_scores = attn_scores + mask
         attn_weights = F.softmax(attn_scores, dim=-1, dtype=torch.float32).type_as(
             attn_scores
         )
@@ -292,10 +293,12 @@ class DiffAttention(nn.Module):
         ).type_as(q)
         lambda_full = lambda_1 - lambda_2 + self.lambda_init
 
+        # Split attention weights for differential attention
         attn_weights = attn_weights.view(bsz, self.num_heads, 2, tgt_len, src_len)
-        attn_weights = attn_weights[:, :, 0] - lambda_full * attn_weights[:, :, 1]
+        attn_weights_diff = attn_weights[:, :, 0] - lambda_full * attn_weights[:, :, 1]
 
-        ctx_vec = torch.matmul(attn_weights, values)
+        # Apply attention to values (values shape: bsz, num_heads, tgt_len, 2*head_dim)
+        ctx_vec = torch.matmul(attn_weights_diff, values)
         ctx_vec = self.sublayer_norm(ctx_vec)
         ctx_vec = ctx_vec.transpose(1, 2).reshape(
             bsz, tgt_len, self.num_heads * 2 * self.head_dim
