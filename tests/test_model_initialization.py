@@ -74,7 +74,12 @@ try:
     
     def run_on_modal(fn):
         """Decorator to run a test function on Modal GPU instance."""
-        modal_func = app.function(gpu="A10G", timeout=1000, image=image)(fn)
+        modal_func = app.function(
+            gpu="A10G", 
+            timeout=1000, 
+            image=image,
+            mounts=[modal.Mount.from_local_dir(".", remote_path="/root/app")]
+        )(fn)
         return modal_func.remote()
 
 except ImportError:
@@ -1031,6 +1036,12 @@ if MODAL_AVAILABLE and app is not None:
     @app.local_entrypoint()
     def modal_main():
         """Entry point for Modal execution in GitHub Actions."""
+        import sys
+        import os
+        # Add the mounted app directory to Python path
+        sys.path.insert(0, "/root/app")
+        # Change to the app directory
+        os.chdir("/root/app")
         return run_modal_tests()
 
 
