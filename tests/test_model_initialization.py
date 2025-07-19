@@ -76,7 +76,8 @@ try:
         modal_func = app.function(
             gpu="A10G", 
             timeout=1000, 
-            image=image
+            image=image,
+            serialized=True
         )(fn)
         return modal_func.remote()
 
