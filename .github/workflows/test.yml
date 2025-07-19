@@ -2,7 +2,7 @@ name: Test Model
 
 on:
   push:
-    branches: main
+    branches: sam_mla
   pull_request:
     branches: main
 
