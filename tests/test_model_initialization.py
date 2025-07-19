@@ -990,44 +990,42 @@ def run_modal_tests():
     print("🚀 **SabiYarn Model Initialization Tests (Modal)**")
     print("=" * 60)
 
-    print("Modal env is working")
-    print('Modal set up is functional')
-    # test_functions = [
-    #     ("MHA Model Initialization", test_mha_model_initialization),
-    #     ("Differential Attention Model", test_differential_attention_model),
-    #     ("MLA Model", test_mla_model),
-    #     ("MLA + MoE Model", test_mla_with_moe),
-    #     ("Attention Factory", test_attention_factory),
-    #     ("Configuration Validation", test_configuration_validation),
-    #     ("Distributed Training Config", test_distributed_training_config),
-    #     ("Multi-Token Prediction", test_multi_token_prediction),
-    #     ("Layer Sharing", test_layer_sharing),
-    #     ("Layer Sharing Validation", test_layer_sharing_validation),
-    #     ("Cut Cross Entropy", test_cut_cross_entropy),
-    # ]
+    test_functions = [
+        ("MHA Model Initialization", test_mha_model_initialization),
+        ("Differential Attention Model", test_differential_attention_model),
+        ("MLA Model", test_mla_model),
+        ("MLA + MoE Model", test_mla_with_moe),
+        ("Attention Factory", test_attention_factory),
+        ("Configuration Validation", test_configuration_validation),
+        ("Distributed Training Config", test_distributed_training_config),
+        ("Multi-Token Prediction", test_multi_token_prediction),
+        ("Layer Sharing", test_layer_sharing),
+        ("Layer Sharing Validation", test_layer_sharing_validation),
+        ("Cut Cross Entropy", test_cut_cross_entropy),
+    ]
     
-    # passed_tests = 0
-    # total_tests = len(test_functions)
+    passed_tests = 0
+    total_tests = len(test_functions)
     
-    # for test_name, test_func in test_functions:
-    #     try:
-    #         result = run_on_modal(test_func)
-    #         if result:
-    #             passed_tests += 1
-    #             print(f"✅ {test_name}: PASSED on Modal")
-    #         else:
-    #             print(f"❌ {test_name}: FAILED on Modal")
-    #     except Exception as e:
-    #         print(f"❌ {test_name}: ERROR on Modal: {e}")
+    for test_name, test_func in test_functions:
+        try:
+            result = run_on_modal(test_func)
+            if result:
+                passed_tests += 1
+                print(f"✅ {test_name}: PASSED on Modal")
+            else:
+                print(f"❌ {test_name}: FAILED on Modal")
+        except Exception as e:
+            print(f"❌ {test_name}: ERROR on Modal: {e}")
     
-    # print(f"\n📊 **Modal Results: {passed_tests}/{total_tests} tests passed**")
+    print(f"\n📊 **Modal Results: {passed_tests}/{total_tests} tests passed**")
     
-    # if passed_tests == total_tests:
-    #     print("🎉 **All tests passed on Modal!**")
-    #     return True
-    # else:
-    #     print(f"⚠️ {total_tests - passed_tests} tests failed on Modal")
-    #     return False
+    if passed_tests == total_tests:
+        print("🎉 **All tests passed on Modal!**")
+        return True
+    else:
+        print(f"⚠️ {total_tests - passed_tests} tests failed on Modal")
+        return False
 
 
 # --- Modal Entrypoint for GitHub Actions ---
