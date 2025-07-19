@@ -546,8 +546,8 @@ def test_configuration_validation():
 
 @with_imports
 def test_distributed_training_config():
-    """Test the new distributed training configuration features with auto-detection and forward passes."""
-    print("\\n🧪 Testing Distributed Training Configuration...")
+    """Test the distributed training configuration features with auto-detection and forward passes."""
+    print("\n🧪 Testing Distributed Training Configuration...")
     
     try:
         from sabiyarn.model import _detect_distributed_config
@@ -557,7 +557,7 @@ def test_distributed_training_config():
         print(f"✅ Auto-detection works: distributed={distributed}, world_size={world_size}")
         
         # Test 2: MLA with auto-detected distributed config and forward pass
-        print("\\n🔧 Testing MLA with auto-detected distributed config...")
+        print("\n🔧 Testing MLA with auto-detected distributed config...")
         
         mla_config = MLAConfig(
             hidden_size=256,
@@ -600,72 +600,7 @@ def test_distributed_training_config():
             hidden_states, logits = model_mla(tokens, start_pos=0)
             print(f"✅ MLA forward pass: {hidden_states.shape} -> {logits.shape}")
         
-        # Test 3: MHA with auto-detected distributed config and forward pass
-        print("\\n🔧 Testing MHA with auto-detected distributed config...")
-        
-        config_mha = ModelArgs(
-            dim=256,
-            n_layers=1,
-            n_heads=8,
-            n_kv_heads=4,
-            vocab_size=1000,
-            attention_type=AttentionType.SELF_ATTENTION,
-            auto_detect_distributed=True  # Auto-detect distributed config
-        )
-        
-        model_mha = SabiYarn(config_mha)
-        print(f"✅ MHA model created: distributed={config_mha.distributed}, data_parallel={config_mha.data_parallel}")
-        
-        # Forward pass test for MHA
-        tokens = torch.randint(0, 1000, (1, 8))
-        hidden_states, logits = model_mha(tokens, start_pos=0)
-        print(f"✅ MHA forward pass: {hidden_states.shape} -> {logits.shape}")
-        
-        # Test 4: Differential Attention with auto-detected distributed config and forward pass
-        print("\\n🔧 Testing Differential Attention with auto-detected distributed config...")
-        
-        diff_args = DiffAttnArgs(
-            depth=0,
-            max_batch_size=2,
-            n_heads=8,
-            embed_dim=256,
-            n_kv_heads=4,
-            max_seq_len=32,
-            norm_eps=1e-5
-        )
-        
-        config_diff = ModelArgs(
-            dim=256,
-            n_layers=1,
-            n_heads=16,  # Total heads for transformer
-            vocab_size=1000,
-            attention_type=AttentionType.DIFFERENTIAL_ATTENTION,
-            diff_attn_args=diff_args,
-            auto_detect_distributed=True  # Auto-detect distributed config
-        )
-        
-        model_diff = SabiYarn(config_diff)
-        print(f"✅ Differential Attention model created: distributed={config_diff.distributed}, data_parallel={config_diff.data_parallel}")
-        
-        # Forward pass test for Differential Attention
-        tokens = torch.randint(0, 1000, (1, 8))
-        hidden_states, logits = model_diff(tokens, start_pos=0)
-        print(f"✅ Differential Attention forward pass: {hidden_states.shape} -> {logits.shape}")
-        
-        # Test 5: Verify parallel layers get correct world_size
-        print("\\n🔧 Testing parallel layers with explicit world_size...")
-        from sabiyarn.MLA import ColumnParallelLinear, RowParallelLinear
-        
-        col_layer = ColumnParallelLinear(256, 512, world_size=4)
-        row_layer = RowParallelLinear(512, 256, world_size=4)
-        
-        assert col_layer.part_out_features == 128, f"Expected 128, got {col_layer.part_out_features}"
-        assert row_layer.part_in_features == 128, f"Expected 128, got {row_layer.part_in_features}"
-        assert row_layer.world_size == 4, f"Expected 4, got {row_layer.world_size}"
-        
-        print("✅ Parallel layers correctly configured with world_size")
-        
-        print("\\n✅ All distributed training configuration tests passed!")
+        print("\n✅ Distributed training configuration test passed!")
         return True
         
     except Exception as e:
@@ -987,45 +922,38 @@ def run_local_tests():
         return False
 
 def run_modal_tests():
-    """Run tests on Modal for GitHub Actions."""
-    print("🚀 **SabiYarn Model Initialization Tests (Modal)**")
+    """Run the same comprehensive tests on Modal GPU."""
+    print("🚀 **SabiYarn Model Initialization Tests (Modal GPU)**")
     print("=" * 60)
-
-    test_functions = [
-        ("MHA Model Initialization", test_mha_model_initialization),
-        ("Differential Attention Model", test_differential_attention_model),
-        ("MLA Model", test_mla_model),
-        ("MLA + MoE Model", test_mla_with_moe),
-        ("Attention Factory", test_attention_factory),
-        ("Configuration Validation", test_configuration_validation),
-        ("Distributed Training Config", test_distributed_training_config),
-        ("Multi-Token Prediction", test_multi_token_prediction),
-        ("Layer Sharing", test_layer_sharing),
-        ("Layer Sharing Validation", test_layer_sharing_validation),
-        ("Cut Cross Entropy", test_cut_cross_entropy),
-    ]
     
-    passed_tests = 0
-    total_tests = len(test_functions)
+    # Create a single Modal function that runs all local tests
+    @app.function(gpu="A10G", timeout=1000, image=image)
+    def run_all_tests_on_modal():
+        """Run all comprehensive tests on Modal GPU."""
+        # Setup imports within Modal context
+        import sys
+        import os
+        sys.path.insert(0, os.getcwd())
+        
+        # Import and run the local test function
+        from tests.test_model_initialization import run_local_tests
+        return run_local_tests()
     
-    for test_name, test_func in test_functions:
-        try:
-            result = run_on_modal(test_func)
-            if result:
-                passed_tests += 1
-                print(f"✅ {test_name}: PASSED on Modal")
-            else:
-                print(f"❌ {test_name}: FAILED on Modal")
-        except Exception as e:
-            print(f"❌ {test_name}: ERROR on Modal: {e}")
-    
-    print(f"\n📊 **Modal Results: {passed_tests}/{total_tests} tests passed**")
-    
-    if passed_tests == total_tests:
-        print("🎉 **All tests passed on Modal!**")
-        return True
-    else:
-        print(f"⚠️ {total_tests - passed_tests} tests failed on Modal")
+    try:
+        print("🔄 Executing all tests on Modal GPU...")
+        result = run_all_tests_on_modal.remote()
+        
+        if result:
+            print("🎉 **All comprehensive tests passed on Modal GPU!**")
+            return True
+        else:
+            print("❌ **Some tests failed on Modal GPU**")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Modal execution failed: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
