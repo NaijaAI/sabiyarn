@@ -71,6 +71,19 @@ try:
     # Modal app for running tests on Modal
     app = modal.App("sabiyarn-tests")
     
+    # Global Modal function for comprehensive testing
+    @app.function(gpu="A10G", timeout=1000, image=image, serialized=True)
+    def run_all_tests_on_modal():
+        """Run all comprehensive tests on Modal GPU."""
+        # Setup imports within Modal context
+        import sys
+        import os
+        sys.path.insert(0, os.getcwd())
+        
+        # Import and run the local test function
+        from tests.test_model_initialization import run_local_tests
+        return run_local_tests()
+    
     def run_on_modal(fn):
         """Decorator to run a test function on Modal GPU instance."""
         modal_func = app.function(
@@ -84,6 +97,7 @@ try:
 except ImportError:
     MODAL_AVAILABLE = False
     app = None
+    run_all_tests_on_modal = None
     
     def run_on_modal(fn):
         """Fallback for when Modal is not available."""
@@ -926,21 +940,12 @@ def run_modal_tests():
     print("🚀 **SabiYarn Model Initialization Tests (Modal GPU)**")
     print("=" * 60)
     
-    # Create a single Modal function that runs all local tests
-    @app.function(gpu="A10G", timeout=1000, image=image)
-    def run_all_tests_on_modal():
-        """Run all comprehensive tests on Modal GPU."""
-        # Setup imports within Modal context
-        import sys
-        import os
-        sys.path.insert(0, os.getcwd())
-        
-        # Import and run the local test function
-        from tests.test_model_initialization import run_local_tests
-        return run_local_tests()
+    if not MODAL_AVAILABLE or run_all_tests_on_modal is None:
+        print("❌ Modal not available, cannot run Modal tests")
+        return False
     
     try:
-        print("🔄 Executing all tests on Modal GPU...")
+        print("🔄 Executing all comprehensive tests on Modal GPU...")
         result = run_all_tests_on_modal.remote()
         
         if result:
