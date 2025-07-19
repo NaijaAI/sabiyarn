@@ -67,7 +67,6 @@ try:
     image = (
         modal.Image.debian_slim(python_version="3.10")
         .pip_install_from_requirements("requirements.txt")
-        .copy_local_dir(".", "/root/app")
     )
     # Modal app for running tests on Modal
     app = modal.App("sabiyarn-tests")
