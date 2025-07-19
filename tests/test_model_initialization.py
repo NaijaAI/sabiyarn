@@ -67,6 +67,7 @@ try:
     image = (
         modal.Image.debian_slim(python_version="3.10")
         .pip_install_from_requirements("requirements.txt")
+        .add_local_dir(".", remote_path="/app")
     )
     # Modal app for running tests on Modal
     app = modal.App("sabiyarn-tests")
@@ -78,7 +79,8 @@ try:
         # Setup imports within Modal context
         import sys
         import os
-        sys.path.insert(0, os.getcwd())
+        os.chdir("/app")
+        sys.path.insert(0, "/app")
         
         # Since we're in the same file, just call the function directly
         # Import the required dependencies for the tests
