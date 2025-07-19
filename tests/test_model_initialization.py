@@ -12,26 +12,52 @@ The script automatically detects if Modal is available and falls back to local
 execution if not. All tests will run locally by default unless --modal flag is used.
 """
 
-import torch
 import sys
 import os
 
-# Add the project root to path so we can import sabiyarn as a package
-project_root = os.path.join(os.path.dirname(__file__), '..')
-sys.path.insert(0, project_root)
+# Conditional imports to avoid Modal setup issues
+def setup_imports():
+    """Setup imports that require dependencies to be available."""
+    import torch
+    
+    # Add the project root to path so we can import sabiyarn as a package
+    project_root = os.path.join(os.path.dirname(__file__), '..')
+    sys.path.insert(0, project_root)
+    
+    # Import as proper package
+    from sabiyarn.model import ModelArgs, SabiYarn, AttentionType
+    from sabiyarn.MLA import MLAConfig
+    from sabiyarn.differential_attention import DiffAttnArgs
+    
+    # Try to import cut_cross_entropy, skip test if not available
+    try:
+        from cut_cross_entropy import linear_cross_entropy
+        cce_available = True
+    except ImportError:
+        cce_available = False
+        linear_cross_entropy = None
+    
+    return {
+        'torch': torch,
+        'ModelArgs': ModelArgs,
+        'SabiYarn': SabiYarn, 
+        'AttentionType': AttentionType,
+        'MLAConfig': MLAConfig,
+        'DiffAttnArgs': DiffAttnArgs,
+        'linear_cross_entropy': linear_cross_entropy,
+        'CCE_AVAILABLE': cce_available
+    }
 
-# Import as proper package
-from sabiyarn.model import ModelArgs, SabiYarn, AttentionType
-from sabiyarn.MLA import MLAConfig
-from sabiyarn.differential_attention import DiffAttnArgs
-
-# Try to import cut_cross_entropy, skip test if not available
-try:
-    from cut_cross_entropy import linear_cross_entropy
-    CCE_AVAILABLE = True
-except ImportError:
-    CCE_AVAILABLE = False
-    linear_cross_entropy = None
+def with_imports(func):
+    """Decorator that injects imports as globals for the function."""
+    def wrapper(*args, **kwargs):
+        imports = setup_imports()
+        # Inject imports into function's global namespace
+        func_globals = func.__globals__
+        for name, value in imports.items():
+            func_globals[name] = value
+        return func(*args, **kwargs)
+    return wrapper
 
 # Conditional Modal imports for GitHub Actions
 try:
@@ -59,6 +85,7 @@ except ImportError:
         """Fallback for when Modal is not available."""
         return fn()
 
+@with_imports
 def test_cut_cross_entropy():
     """Test cut cross entropy loss function."""
     if not CCE_AVAILABLE or linear_cross_entropy is None:
@@ -109,6 +136,7 @@ def test_cut_cross_entropy():
         traceback.print_exc()
         return False
 
+@with_imports
 def test_mha_model_initialization():
     """Test model initialization with Multi-Head Attention."""
     print("🧪 Testing MHA Model Initialization...")
@@ -153,6 +181,7 @@ def test_mha_model_initialization():
         traceback.print_exc()
         return False
 
+@with_imports
 def test_differential_attention_model():
     """Test model initialization with Differential Attention."""
     print("\n🧪 Testing Differential Attention Model...")
@@ -207,6 +236,7 @@ def test_differential_attention_model():
         traceback.print_exc()
         return False
 
+@with_imports
 def test_mla_model():
     """Test model initialization with Multi-Head Latent Attention."""
     print("\n🧪 Testing MLA Model...")
@@ -277,6 +307,7 @@ def test_mla_model():
         traceback.print_exc()
         return False
 
+@with_imports
 def test_mla_with_moe():
     """Test model initialization with MLA + MoE."""
     print("\n🧪 Testing MLA + MoE Model...")
@@ -360,6 +391,7 @@ def test_mla_with_moe():
         traceback.print_exc()
         return False
 
+@with_imports
 def test_attention_factory():
     """Test the attention factory function."""
     print("\n🧪 Testing Attention Factory...")
@@ -433,6 +465,7 @@ def test_attention_factory():
         traceback.print_exc()
         return False
 
+@with_imports
 def test_configuration_validation():
     """Test configuration validation."""
     print("\n🧪 Testing Configuration Validation...")
@@ -507,6 +540,7 @@ def test_configuration_validation():
         traceback.print_exc()
         return False
 
+@with_imports
 def test_distributed_training_config():
     """Test the new distributed training configuration features with auto-detection and forward passes."""
     print("\\n🧪 Testing Distributed Training Configuration...")
@@ -636,6 +670,7 @@ def test_distributed_training_config():
         traceback.print_exc()
         return False
 
+@with_imports
 def test_multi_token_prediction():
     """Test Multi-Token Prediction (MTP) functionality with MLA."""
     print("\\n🧪 Testing Multi-Token Prediction (MTP)...")
@@ -741,6 +776,7 @@ def test_multi_token_prediction():
         traceback.print_exc()
         return False
 
+@with_imports
 def test_layer_sharing():
     """Test MobileLLM-style layer sharing functionality."""
     print("\n🧪 Testing Layer Sharing (MobileLLM-style immediate block-wise repeat)...")
@@ -843,6 +879,7 @@ def test_layer_sharing():
         traceback.print_exc()
         return False
 
+@with_imports
 def test_layer_sharing_validation():
     """Test layer sharing configuration validation."""
     print("\n🧪 Testing Layer Sharing Validation...")
@@ -990,7 +1027,7 @@ def run_modal_tests():
 
 # --- Modal Entrypoint for GitHub Actions ---
 # Only define Modal entrypoint if Modal is available
-if MODAL_AVAILABLE:
+if MODAL_AVAILABLE and app is not None:
     @app.local_entrypoint()
     def modal_main():
         """Entry point for Modal execution in GitHub Actions."""
