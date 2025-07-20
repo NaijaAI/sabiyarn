@@ -161,7 +161,7 @@ class Llama:
 
         min_prompt_len = min(len(t) for t in prompt_tokens)
         max_prompt_len = max(len(t) for t in prompt_tokens)
-        assert max_prompt_len <= params.max_seq_len
+        assert max_prompt_len <= params.max_seq_len, f"Prompt length exceeds model maximum sequence length (max_seq_len={params.max_seq_len})"
         total_len = min(params.max_seq_len, max_gen_len + max_prompt_len)
 
         pad_id = self.tokenizer.pad_id
@@ -419,3 +419,18 @@ def sample_top_p(probs, p):
     next_token = torch.multinomial(probs_sort, num_samples=1)
     next_token = torch.gather(probs_idx, -1, next_token)
     return next_token
+
+def sample(logits, temperature: float = 1.0):
+    """
+    Samples a token from the logits using temperature scaling.
+
+    Args:
+        logits (torch.Tensor): The logits tensor for token predictions.
+        temperature (float, optional): Temperature for scaling logits. Defaults to 1.0.
+
+    Returns:
+        torch.Tensor: The sampled token.
+    """
+    logits = logits / max(temperature, 1e-5)
+    probs = torch.softmax(logits, dim=-1)
+    return probs.div_(torch.empty_like(probs).exponential_(1)).argmax(dim=-1)

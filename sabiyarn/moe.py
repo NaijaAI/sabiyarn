@@ -49,6 +49,7 @@ class MLP(nn.Module):
         self.w1 = ColumnParallelLinear(dim, inter_dim)
         self.w2 = RowParallelLinear(inter_dim, dim)
         self.w3 = ColumnParallelLinear(dim, inter_dim)
+        
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -60,6 +61,7 @@ class MLP(nn.Module):
         Returns:
             torch.Tensor: Output tensor after MLP computation.
         """
+
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
 class Gate(nn.Module):
@@ -141,6 +143,7 @@ class Expert(nn.Module):
         self.w1 = Linear(dim, inter_dim)
         self.w2 = Linear(inter_dim, dim)
         self.w3 = Linear(dim, inter_dim)
+        
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -152,6 +155,7 @@ class Expert(nn.Module):
         Returns:
             torch.Tensor: Output tensor after expert computation.
         """
+
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
 class MoE(nn.Module):
@@ -187,6 +191,7 @@ class MoE(nn.Module):
         self.experts = nn.ModuleList([Expert(args.dim, args.moe_inter_dim) if self.experts_start_idx <= i < self.experts_end_idx else None
                                       for i in range(self.n_routed_experts)])
         self.shared_experts = MLP(args.dim, args.n_shared_experts * args.moe_inter_dim)
+    
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass for the MoE module.
