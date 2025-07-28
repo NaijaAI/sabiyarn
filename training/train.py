@@ -97,15 +97,14 @@ min_lr = config.training.min_lr  # minimum learning rate, should be ~= config.le
 # DDP settings
 # os.environ["MASTER_ADDR"] = config."127.0.0.1"
 # os.environ["MASTER_PORT"] = config."29500"
+ddp = config.ddp.use_ddp
 rank = config.ddp.rank
 world_size = config.torch.cuda.device_count()
 backend = config.ddp.backend
 
 
 # system
-device = (
-    "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
-)
+device_type = "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
 dtype = (
     "bfloat16"
     if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
@@ -133,7 +132,7 @@ prepare.run()
 LOG.info("starting training...")
 tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
 # various inits, derived attributes, I/O setup
-ddp = False
+
 if ddp:
     dist.init_process_group(
         backend=backend, rank=rank, init_method="env://", world_size=world_size
@@ -166,13 +165,14 @@ if master_process:
 torch.manual_seed(1337 + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
-device_type = "cuda" if "cuda" in device else "cpu"  # for later use in torch.autocast
+
 # note: float16 data type will automatically use a GradScaler
 ptdtype = {
     "float32": torch.float32,
     "bfloat16": torch.bfloat16,
     "float16": torch.float16,
 }[dtype]
+
 ctx = (
     nullcontext()
     if device_type == "cpu"
@@ -190,6 +190,7 @@ def get_batch(split, verbose=False):
         data = np.memmap(train_data_path, dtype=np.uint16, mode="r")
     else:
         data = np.memmap(eval_data_path, dtype=np.uint16, mode="r")
+        
     ix = torch.randint(len(data) - block_size, (train_batch_size,))
     x = [torch.from_numpy((data[i : i + block_size]).astype(np.int64)) for i in ix]
     y = [
@@ -260,106 +261,22 @@ def configure_optimizer(
 iter_num = 0
 best_val_loss = 1e9
 
-# attempt to derive vocab_size from the dataset
-# meta_path = os.path.join(data_dir, 'meta.pkl')
-# meta_vocab_size = None
-# if os.path.exists(meta_path):
-#     with open(meta_path, 'rb') as f:
-#         meta = pickle.load(f)
-#     meta_vocab_size = meta['vocab_size']
-#     print(f"found vocab_size = {meta_vocab_size} (inside {meta_path})")
-
-# model init
-# model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
-#                   bias=bias, vocab_size=vocab_size, dropout=dropout) # start with model_args from command line
-
-if init_from == "scratch":
     # init a new model from scratch
-    print("Initializing a new model from scratch")
-    # determine the vocab size we'll use for from-scratch training
-    # if meta_vocab_size is None:
-    #     print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
-    # model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
-    if use_moe:
-        moe = MoeArgs(num_experts, num_experts_per_tok)
+print("Initializing a new model from scratch")
+if use_moe:
+    moe = MoeArgs(num_experts, num_experts_per_tok)
 
-    # Change the arguments to what is desirable.
-    if attention_type == "differential_attention":
-        diff_attn_args = DiffAttnArgs(
-            max_batch_size=max_batch_size,
-            n_heads=n_heads,
-            embed_dim=dim,
-            n_kv_heads=n_kv_heads,
-            max_seq_len=block_size,
-            norm_eps=norm_eps,
-        )
+# Change the arguments to what is desirable.
+if attention_type == "differential_attention":
+    diff_attn_args = DiffAttnArgs(
+        max_batch_size=max_batch_size,
+        n_heads=n_heads,
+        embed_dim=dim,
+        n_kv_heads=n_kv_heads,
+        max_seq_len=block_size,
+        norm_eps=norm_eps,
+    )
 
-        model_args = ModelArgs(
-            dim,
-            n_layers,
-            n_heads,
-            n_kv_heads,
-            vocab_size,
-            multiple_of,
-            ffn_dim_multiplier,
-            norm_eps,
-            moe,
-            logic_network,
-            max_batch_size,
-            max_seq_len,
-            use_j,
-            attention_type,
-            diff_attn_args,
-        )
-    else:
-        diff_attn_args = None
-        model_args = ModelArgs(
-            dim=dim,
-            n_layers=n_layers,
-            n_heads=n_heads,
-            n_kv_heads=n_kv_heads,
-            vocab_size=vocab_size,
-            multiple_of=multiple_of,
-            ffn_dim_multiplier=ffn_dim_multiplier,
-            norm_eps=norm_eps,
-            moe=moe,
-            logic_network=logic_network,
-            max_batch_size=max_batch_size,
-            max_seq_len=max_seq_len,
-            use_j=use_j,
-            attention_type=attention_type,
-            diff_attn_args=diff_attn_args,
-        )
-
-    model = SabiYarn(model_args)
-    LOG.info(f"{model.get_model_size()}")
-
-elif init_from == "resume":
-    print(f"Resuming training from {out_dir}")
-    # resume training from a checkpoint.
-    ckpt_path = os.path.join(out_dir, "ckpt.pt")
-    checkpoint = torch.load(ckpt_path, map_location=device)
-    checkpoint_model_args = checkpoint["model_args"]
-    # force these config attributes to be equal otherwise we can't even resume training
-    # the rest of the attributes (e.g. dropout) can stay as desired from command line
-    # for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
-    #     model_args[k] = checkpoint_model_args[k]
-
-    # create the model
-    if use_moe:
-        moe = MoeArgs(num_experts, num_experts_per_tok)
-
-    if attention_type == "differential_attention":
-        diff_attn_args = DiffAttnArgs(
-            max_batch_size=max_batch_size,
-            n_heads=n_heads,
-            embed_dim=dim,
-            n_kv_heads=n_kv_heads,
-            max_seq_len=block_size,
-            norm_eps=norm_eps,
-        )
-    else:
-        diff_attn_args = None
     model_args = ModelArgs(
         dim,
         n_layers,
@@ -374,32 +291,53 @@ elif init_from == "resume":
         max_batch_size,
         max_seq_len,
         use_j,
+        attention_type,
         diff_attn_args,
     )
+else:
+    diff_attn_args = None
+    model_args = ModelArgs(
+        dim=dim,
+        n_layers=n_layers,
+        n_heads=n_heads,
+        n_kv_heads=n_kv_heads,
+        vocab_size=vocab_size,
+        multiple_of=multiple_of,
+        ffn_dim_multiplier=ffn_dim_multiplier,
+        norm_eps=norm_eps,
+        moe=moe,
+        logic_network=logic_network,
+        max_batch_size=max_batch_size,
+        max_seq_len=max_seq_len,
+        use_j=use_j,
+        attention_type=attention_type,
+        diff_attn_args=diff_attn_args,
+    )
 
-    model = SabiYarn(model_args, diff_attn_args)
+model = SabiYarn(model_args)
+LOG.info(f"{model.get_model_size()}")
+
+# optimizer
+optimizer = configure_optimizer(model, optimizer, weight_decay, betas=(beta1, beta2))
+
+if init_from == "checkpoint":
+    print(f"Resuming training from {out_dir}")
+    # resume training from a checkpoint.
+    ckpt_path = os.path.join(out_dir, "ckpt.pt")
+    checkpoint = torch.load(ckpt_path, map_location=device)
+    checkpoint_model_args = checkpoint["model_args"]
+   
     state_dict = checkpoint["model"]
-    # fix the keys of the state dictionary :(
-    # honestly no idea how checkpoints sometimes get this prefix, have to debug more
-    # unwanted_prefix = '_orig_mod.'
-    # for k,v in list(state_dict.items()):
-    #     if k.startswith(unwanted_prefix):
-    #         state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
     model.load_state_dict(state_dict)
     iter_num = checkpoint["iter_num"]
     best_val_loss = checkpoint["best_val_loss"]
+    optimizer.load_state_dict(checkpoint["optimizer"])
 
 
 model.to(device)
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
-scaler = torch.cuda.amp.GradScaler(enabled=(dtype == dtype))
-
-# optimizer
-optimizer = configure_optimizer(model, optimizer, weight_decay, betas=(beta1, beta2))
-
-if init_from == "resume":
-    optimizer.load_state_dict(checkpoint["optimizer"])
+scaler = torch.amp.GradScaler(device_type, enabled=(dtype == dtype))
 
 checkpoint = None  # free up memory
 
@@ -408,6 +346,7 @@ if compile:
     print("compiling the model... (takes a ~minute)")
     unoptimized_model = model
     model = torch.compile(model)  # requires PyTorch 2.0
+    
 ddp_local_rank = rank
 # wrap model into DDP container
 if ddp:
@@ -499,6 +438,7 @@ def generate_and_decode_sequences(
     for input_seq, output_seq in zip(decoded_inputs, decoded_outputs):
         print("Input Sequence: ")
         print(input_seq[-150:])
+        print("-" * 80)
         print("Generated Sequence: ")
         print(output_seq.strip(input_seq))
         print("-" * 80)
