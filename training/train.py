@@ -3,13 +3,12 @@ import time
 import math
 from contextlib import nullcontext
 import structlog
-
-# import numpy as np
-# import torch
-# from transformers import AutoTokenizer
-# from torch.nn.parallel import DistributedDataParallel as DDP
-# import torch.distributed as dist
-# from torch.distributed import init_process_group, destroy_process_group
+import numpy as np
+import torch
+from transformers import AutoTokenizer
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
+from torch.distributed import init_process_group, destroy_process_group
 from torch.nn import functional as F
 
 from ..data import prepare
@@ -22,84 +21,84 @@ from .training_attention_mask import create_causal_mask
 import wandb
 from torch.optim import SGD, Adam, AdamW
 from bitsandbytes import optim  # For Adam8bit if using the bitsandbytes library
-
+from omegaconf import OmegaConf
 
 LOG = structlog.stdlib.get_logger()
 # -----------------------------------------------------------------------------
-# default config values designed to train a gpt2 (124M) on OpenWebText
+# default config values
 
+config = OmegaConf.load("../config/config.yaml")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 wandb_key = os.getenv("WANDB_API_KEY")
 hf_key = os.getenv("HF_WRITE_TOKEN")
 
 # I/O
-train_batch_size = 24
-train_data_path = "./train.bin"
-eval_data_path = "./val.bin"
-out_dir = "out"
-eval_interval = 2000
-log_interval = 100
-eval_iters = 200
-eval_only = False  # if True, script exits right after the first eval
-always_save_checkpoint = True  # if True, always save a checkpoint after each eval
-init_from = "scratch"  # 'scratch' or 'resume'
+train_batch_size = config.training.train_batch_size
+train_data_path = config.data.train_data_path
+eval_data_path = config.data.eval_data_path
+out_dir = config.training.out_dir
+eval_interval = config.training.eval_interval
+log_interval = config.training.log_interval
+eval_iters = config.training.eval_iters
+eval_only = config.training.eval_only  # if True, script exits right after the first eval
+always_save_checkpoint = config.training.always_save_checkpoint  # if True, always save a checkpoint after each eval
+init_from = config.model.init_from  # 'scratch' or 'resume'
+use_cce = config.model.training.use_cce  # to use cut cross entropy or not
 
 # wandb logging
-wandb_log = True  # disabled by default
-wandb_project = "sabiyarn-ablations"
-wandb_run_name = "ablation_1"  # 'run' + str(time.time())
+wandb_log = config.wandb.log  # disabled by default
+wandb_project = config.wandb.project
+wandb_run_name = config.wandb.run_name  # 'run' + str(time.time())
 
 # data
-dataset = "Aletheia-ng/wiki-yo"
-gradient_accumulation_steps = 5 * 8  # used to simulate larger batch sizes
-batch_size = (
-    train_batch_size  # if gradient_accumulation_steps > 1, this is the micro-batch size
-)
+dataset = config.data.dataset
+gradient_accumulation_steps = config.training.gradient_accumulation_steps # used to simulate larger batch sizes
+batch_size = train_batch_size
 
 # model
-vocab_size = 52050
-n_layers = 24
-n_heads = 8
-dropout = 0.0  # for pretraining 0 is good, for finetuning try 0.1+
-bias = False  # do we use bias inside LayerNorm and Linear layers?
-dim = 2048
-n_kv_heads = 4
-multiple_of = 256  # make SwiGLU hidden layer size multiple of large power of 2
-ffn_dim_multiplier = None
-norm_eps = 1e-5
-use_moe = False
-moe = None
-attention_type = "differential_attention"
-use_cce = True  # to use cut cross entropy or not
-logic_network = False
-max_batch_size = 8
-max_seq_len = 1024
-block_size = max_seq_len
-use_j = True
-display_model_output_iter = 768
-num_experts = 4
-num_experts_per_tok = 2
+vocab_size = config.model.vocab_size
+n_layers = config.model.n_layers
+n_heads = config.model.n_heads
+dropout = config.model.dropout  # for pretraining 0 is good, for finetuning try 0.model.1+
+bias = config.model.bias  # do we use bias inside LayerNorm and Linear layers?
+dim = config.model.dim
+n_kv_heads = config.model.n_kv_heads
+multiple_of = config.model.multiple_of # make SwiGLU hidden layer size multiple of large power of 2
+ffn_dim_multiplier = config.model.ffn_dim_multiplier
+norm_eps = config.model.norm_eps
+use_moe = config.model.use_moe
+moe = config.model.moe
+attention_type = config.model.attention_type
+logic_network = config.model.logic_network
+max_batch_size = config.model.max_batch_size
+max_seq_len = config.model.max_seq_len
+block_size = config.model.block_size
+use_j = config.model.use_j
+display_model_output_iter = config.model.display_model_output_iter
+num_experts = config.model.num_experts
+num_experts_per_tok = config.model.num_experts_per_tok
+
 # adamw optimizer
-optimizer = "adam"
-learning_rate = 3e-4  # max learning rate
-max_iters = 600000  # total number of training iterations
-weight_decay = 1e-1
-beta1 = 0.9
-beta2 = 0.95
-grad_clip = 1.0  # clip gradients at this value, or disable if == 0.0
+optimizer = config.optimizer.name
+learning_rate = config.optimizer.learning_rate # max learning rate
+max_iters = config.optimizer.max_iters  # total number of training iterations
+weight_decay = config.optimizer.weight_decay
+beta1 = config.optimizer.beta1
+beta2 = config.optimizer.beta2
+grad_clip = config.optimizer.grad_clip # clip gradients at this value, or disable if == config.0.0
 
 # learning rate decay settings
-decay_lr = True  # whether to decay the learning rate
-warmup_iters = 1500  # how many steps to warm up for
-lr_decay_iters = 600000  # should be ~= max_iters per Chinchilla
-min_lr = 6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
+decay_lr = config.training.decay_lr  # whether to decay the learning rate
+warmup_iters = config.training.warmup_iters # how many steps to warm up for
+lr_decay_iters = config.training.lr_decay_iters  # should be ~= config.max_iters per Chinchilla
+min_lr = config.training.min_lr  # minimum learning rate, should be ~= config.learning_rate/10 per Chinchilla
 
 # DDP settings
-os.environ["MASTER_ADDR"] = "127.0.0.1"
-os.environ["MASTER_PORT"] = "29500"
-rank = 0
-world_size = torch.cuda.device_count()
-backend = "nccl"
+# os.environ["MASTER_ADDR"] = config."127.0.0.1"
+# os.environ["MASTER_PORT"] = config."29500"
+rank = config.ddp.rank
+world_size = config.torch.cuda.device_count()
+backend = config.ddp.backend
 
 
 # system
@@ -125,10 +124,11 @@ config = {k: globals()[k] for k in config_keys}
 # will be useful for logging
 
 # -----------------------------------------------------------------------------
-
+# Download all the relevant datasets, tokenize and push to a binary file
 LOG.info("Downloading and preprocessing tokens...")
-
 prepare.run()
+
+# Start Training Model
 LOG.info("starting training...")
 tokenizer = AutoTokenizer.from_pretrained("Aletheia-ng/SabiYarn-125M")
 # various inits, derived attributes, I/O setup
