@@ -447,6 +447,7 @@ def estimate_loss(use_cce: bool = False):
                         model.lm_head.weight,
                         Y,
                         shift=True,
+                        ignore_index = -100,
                         impl="torch_compile",
                     )
                 else:
