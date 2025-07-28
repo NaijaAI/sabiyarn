@@ -77,6 +77,7 @@ use_j = config.model.use_j
 display_model_output_iter = config.model.display_model_output_iter
 num_experts = config.model.num_experts
 num_experts_per_tok = config.model.num_experts_per_tok
+tokenizer_name = config.model.tokenizer.name
 
 # adamw optimizer
 optimizer = config.optimizer.name
@@ -130,7 +131,7 @@ prepare.run()
 
 # Start Training Model
 LOG.info("starting training...")
-tokenizer = AutoTokenizer.from_pretrained("Aletheia-ng/SabiYarn-125M")
+tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
 # various inits, derived attributes, I/O setup
 ddp = False
 if ddp:
