@@ -11,7 +11,6 @@ import torch.distributed as dist
 from torch.distributed import init_process_group, destroy_process_group
 from torch.nn import functional as F
 
-from ..data import prepare
 from ..sabiyarn.model import ModelArgs, SabiYarn, MoeArgs
 from ..sabiyarn.differential_attention import DiffAttnArgs
 from ..cut_cross_entropy import linear_cross_entropy
@@ -124,9 +123,7 @@ config = {k: globals()[k] for k in config_keys}
 # will be useful for logging
 
 # -----------------------------------------------------------------------------
-# Download all the relevant datasets, tokenize and push to a binary file
-LOG.info("Downloading and preprocessing tokens...")
-prepare.run()
+# Don't add data download to this script because it keeps GPU idle!!!!!!!!!
 
 # Start Training Model
 LOG.info("starting training...")
@@ -198,7 +195,8 @@ def get_batch(split, verbose=False):
         for i in ix
     ]
     y = [
-        mask_long_sequences(process_labels(sample.clone(), MASK), mask_value=MASK)
+        process_labels(sample.clone(), MASK)
+        # mask_long_sequences(process_labels(sample.clone(), MASK), mask_value=MASK)
         for sample in y
     ]
     x = torch.stack(x)
@@ -522,13 +520,14 @@ def train():
                         hidden_states,
                         model.lm_head.weight,
                         Y,
+                        ignore_index = MASK,
                         shift=True,
                         impl="torch_compile",
                     )
                 else:
 
                     loss = F.cross_entropy(
-                        logits.view(-1, logits.size(-1)), Y.view(-1), ignore_index=-100
+                        logits.view(-1, logits.size(-1)), Y.view(-1), ignore_index=MASK
                     )
                     loss = (
                         loss / gradient_accumulation_steps
