@@ -195,7 +195,7 @@ def get_batch(split, verbose=False):
         for i in ix
     ]
     y = [
-        process_labels(sample.clone(), MASK)
+        process_labels_optimized(sample.clone(), MASK)
         # mask_long_sequences(process_labels(sample.clone(), MASK), mask_value=MASK)
         for sample in y
     ]
