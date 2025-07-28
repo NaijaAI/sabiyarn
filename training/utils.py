@@ -381,7 +381,7 @@ def process_labels_ultra_optimized(tokens, mask=-100):
     result = tokens.clone()
     
     # Convert action_tokens to tensor for efficient comparison
-    action_tokens_tensor = torch.tensor(list(action_tokens), device=tokens.device)
+    action_tokens_tensor = torch.tensor(action_tokens, device=tokens.device)
     
     # Process based on number of indices
     if len(tag_indices) == 1:
