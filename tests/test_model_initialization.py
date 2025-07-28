@@ -58,7 +58,7 @@ def run_all_tests():
             vocab_size = 100
             device = "cuda" if torch.cuda.is_available() else "cpu"
             
-            if device == "cpu":
+            if device == "cpu": # or MacOS
                 e = torch.randn(batch_size, seq_len, embed_dim)
                 c = torch.randn(vocab_size, embed_dim)
                 targets = torch.randint(0, vocab_size, (batch_size, seq_len))
