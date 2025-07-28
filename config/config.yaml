@@ -68,3 +68,4 @@ optimizer:
 ddp:
   rank : 0
   backend : "nccl"
+  use_dp: False
