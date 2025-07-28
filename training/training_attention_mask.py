@@ -254,8 +254,19 @@ def benchmark_mask_functions():
     tensor = torch.randint(0, 100, (batch_size, seq_len), device=device)
     tensor[:, seq_len//2] = 30  # Ensure id_val exists
     
-    original_mask = torch.rand(batch_size, 1, seq_len, seq_len, device=device)
-    original_mask = torch.where(original_mask > 0.5, 1.0, -1e-25)
+    # original_mask = torch.rand(batch_size, 1, seq_len, seq_len, device=device)
+    # original_mask = torch.where(original_mask > 0.5, 1.0, -1e-25)
+    
+     # Generate the original causal mask
+    original_mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.int))
+
+    # Add a batch dimension and a channel dimension
+    expanded_mask = original_mask.unsqueeze(0).unsqueeze(
+        0
+    )  # Now shape is (1, 1, 20, 20)
+
+    # Repeat the tensor along the batch dimension
+    original_mask = expanded_mask.repeat(batch_size, 1, 1, 1)
     
     # Warmup
     for _ in range(10):
@@ -278,12 +289,25 @@ def benchmark_mask_functions():
     torch.cuda.synchronize() if device.type == 'cuda' else None
     ultra_optimized_time = time.time() - start_time
     
+    # Benchmark baseline version
+    torch.cuda.synchronize() if device.type == 'cuda' else None
+    start_time = time.time()
+    for _ in range(100):
+        result3 = create_causal_mask(tensor, original_mask.clone())
+    torch.cuda.synchronize() if device.type == 'cuda' else None
+    baseline_time = time.time() - start_time
+    
+    print(f"baseline version: {baseline_time:.4f}s")
     print(f"Optimized version: {optimized_time:.4f}s")
     print(f"Ultra-optimized version: {ultra_optimized_time:.4f}s")
-    print(f"Speedup: {optimized_time/ultra_optimized_time:.2f}x")
+    print(f"Speedup (ultra-optimized vs baseline): {baseline_time/ultra_optimized_time:.2f}x")
+    print(f"Speedup (ultra-optimized vs optimized): {optimized_time/ultra_optimized_time:.2f}x")
     
     # Verify results are similar
-    print(f"Results match: {torch.allclose(result1, result2, atol=1e-6)}")
+    print(f"Results match: {torch.equal(result1.to(torch.int32), result2.to(torch.int32))}")
+    print(f"Results match: {torch.equal(result3.to(torch.int32), result2.to(torch.int32))}") 
+    # print(f"Results match: {torch.allclose(result1, result2, atol=1e-6)}")
+    # print(f"Results match: {torch.allclose(result3, result2, atol=1e-6)}")
     
 
 
@@ -291,40 +315,40 @@ if __name__ == "__main__":
     import torch
     benchmark_mask_functions()
     # Generate example IDs
-    ids = torch.randint(0, 100, (3, 20))  # Shape: (3, 20)
+    # ids = torch.randint(0, 100, (3, 20))  # Shape: (3, 20)
 
-    # Ensure that ID 30 appears at least 3 times anywhere in each sequence
-    for i in range(ids.shape[0]):
-        # Choose random indices to replace with 30
-        replace_indices = torch.randint(0, ids.shape[1], (3,))
-        ids[i, replace_indices] = 30
-        # ids[i, replace_indices-1]=30
+    # # Ensure that ID 30 appears at least 3 times anywhere in each sequence
+    # for i in range(ids.shape[0]):
+    #     # Choose random indices to replace with 30
+    #     replace_indices = torch.randint(0, ids.shape[1], (3,))
+    #     ids[i, replace_indices] = 30
+    #     # ids[i, replace_indices-1]=30
 
-    # Generate the original causal mask
-    original_mask = torch.tril(torch.ones(20, 20, dtype=torch.int))
+    # # Generate the original causal mask
+    # original_mask = torch.tril(torch.ones(20, 20, dtype=torch.int))
 
-    # Add a batch dimension and a channel dimension
-    expanded_mask = original_mask.unsqueeze(0).unsqueeze(
-        0
-    )  # Now shape is (1, 1, 20, 20)
+    # # Add a batch dimension and a channel dimension
+    # expanded_mask = original_mask.unsqueeze(0).unsqueeze(
+    #     0
+    # )  # Now shape is (1, 1, 20, 20)
 
-    # Repeat the tensor along the batch dimension
-    original_mask = expanded_mask.repeat(3, 1, 1, 1)
+    # # Repeat the tensor along the batch dimension
+    # original_mask = expanded_mask.repeat(3, 1, 1, 1)
 
-    # Print the IDs and the original mask
-    print("IDs:")
-    print(ids)
-    print("\nOriginal Mask:")
+    # # Print the IDs and the original mask
+    # print("IDs:")
+    # print(ids)
+    # print("\nOriginal Mask:")
 
-    start_time = time()
-    causal_mask = create_causal_mask(ids, original_mask)
-    # print(causal_mask.shape, causal_mask[1])
-    end_time = time()
-    print(f"Time taken: {end_time - start_time} seconds..")
+    # start_time = time()
+    # causal_mask = create_causal_mask(ids, original_mask)
+    # # print(causal_mask.shape, causal_mask[1])
+    # end_time = time()
+    # print(f"Time taken: {end_time - start_time} seconds..")
 
-    for i in range(3):
-        print(ids[i])
-        print(causal_mask[i])
+    # for i in range(3):
+    #     print(ids[i])
+    #     print(causal_mask[i])
 
     # print("Original mask: " , original_mask[1])
 
