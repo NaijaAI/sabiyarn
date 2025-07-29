@@ -168,75 +168,108 @@ def create_causal_mask_optimized(tensor, original_mask, id_val=30, min_value=-1e
 
 
 def create_causal_mask_ultra_optimized(tensor, original_mask, id_val=30, min_value=-1e-25):
-    """
-    Ultra-optimized version using pure vectorized operations.
-    Eliminates all explicit loops for maximum efficiency.
-    """
-    # Early exit
+
     if not torch.any(tensor == id_val):
         return original_mask
-    
-    # Handle dimensions
+
+    # Handle dimensions: Ensure original_mask is (batch_size, seq_len, seq_len)
     squeeze_needed = False
     if original_mask.dim() == 4:
         original_mask = original_mask.squeeze(1)
         squeeze_needed = True
-    
+
     batch_size, seq_len, _ = original_mask.shape
     device = original_mask.device
-    
-    # Clone mask
+
     new_mask = original_mask.clone()
-    
-    # Convert to binary mask
+
+    # Convert original_mask to binary for valid positions (where original_mask == max_value)
+    # The original function uses max_value, so we adhere to that.
     max_val = original_mask.max()
-    binary_mask = (original_mask == max_val).float()
+    binary_original_mask = (original_mask == max_val).float()
+
+    # Find where id_val occurs in the tensor
+    id_positions_in_tensor = (tensor == id_val) # (batch_size, seq_len)
+
+    # Create a diagonal mask for the original_mask
+    # This checks if the original mask allows attention at the id_val's position (diagonal element is 1)
+    diag_mask = torch.eye(seq_len, device=device).bool()
+    # Expand diag_mask to (batch_size, seq_len, seq_len) for element-wise multiplication
+    diag_mask_expanded = diag_mask.unsqueeze(0).expand(batch_size, -1, -1)
+
+    # Get the diagonal values from the binary_original_mask
+    # This effectively gets original_mask[i, j, j]
+    original_mask_diag_values = binary_original_mask[:, torch.arange(seq_len), torch.arange(seq_len)] # (batch_size, seq_len)
+
+    valid_id_occurrence = id_positions_in_tensor * original_mask_diag_values.bool()
+    reversed_valid_id_occurrence = torch.flip(valid_id_occurrence, dims=[1])
+   
+    # Create a tensor of indices (0 to seq_len-1)
+    indices = torch.arange(seq_len, device=device).unsqueeze(0).expand(batch_size, -1) # (batch_size, seq_len)
     
-    # Find id positions
-    id_positions = (tensor == id_val).float()  # (batch_size, seq_len)
+    # Mask out non-valid occurrences with a very small number for argmax
+    # This makes sure argmax picks a valid position if available, otherwise a very small index.
+    masked_indices_for_argmax = torch.where(valid_id_occurrence, indices.float(), torch.tensor(-1.0, device=device))
     
-    # Create position indices
-    pos_indices = torch.arange(seq_len, device=device).float()
-    pos_indices = pos_indices.unsqueeze(0).expand(batch_size, -1)
+    # Find the index of the largest value (which corresponds to the rightmost valid ID)
+    # If no valid ID, this will be 0 (the index of -1.0), so we handle that later.
+    last_valid_pos_per_batch = torch.argmax(masked_indices_for_argmax, dim=1) # (batch_size,)
+
+    # Handle batches where no valid id_val was found.
+    # If max value of masked_indices_for_argmax for a batch is -1.0, it means no valid ID.
+    no_valid_id_found = (masked_indices_for_argmax.max(dim=1).values == -1.0)
     
-    # Get diagonal mask values at id positions
-    batch_idx = torch.arange(batch_size, device=device).unsqueeze(1)
-    seq_idx = torch.arange(seq_len, device=device).unsqueeze(0)
+    # For these batches, set their last_valid_pos to -1 (or a value indicating no masking)
+    # This ensures they don't incorrectly apply a mask based on index 0.
+    last_valid_pos_per_batch[no_valid_id_found] = -1
+ 
+    # Create a `col_indices` tensor (1, 1, seq_len) for broadcasting
+    col_indices = torch.arange(seq_len, device=device).unsqueeze(0).unsqueeze(0) # (1, 1, seq_len)
+
+    # Expand valid_id_occurrence to (batch_size, 1, seq_len) for broadcasting
+    valid_id_occurrence_for_masking = valid_id_occurrence.unsqueeze(1) # (batch_size, 1, seq_len)
+
+    # Condition 1: original_mask[batch, row, col] == max_val
+    cond1 = (original_mask == max_val) # (batch_size, seq_len, seq_len)
+
+    # Condition 2: col is a valid_id_occurrence
+    cond2 = valid_id_occurrence_for_masking # (batch_size, 1, seq_len)
+
+    # Combined condition: original_mask connects to a valid id_val position
+    combined_connection_mask = cond1 & cond2 # (batch_size, seq_len, seq_len)
+
+    # Now, for each (batch, row), find the maximum `col_indices` where `combined_connection_mask` is True.
+    # If no True, it means no connection to a valid `id_val`.
     
-    diagonal_values = binary_mask[batch_idx, seq_idx, seq_idx]  # (batch_size, seq_len)
-    valid_id_mask = id_positions * diagonal_values  # Only valid id positions
-    
-    # Find the rightmost valid id position for each sequence
-    # Multiply positions by validity mask, then find max
-    weighted_positions = pos_indices * valid_id_mask
-    
-    # For each batch, find the maximum valid position
-    # Use a large negative number for invalid positions
-    masked_positions = torch.where(valid_id_mask > 0, weighted_positions, torch.tensor(-1e9, device=device))
-    last_valid_pos = torch.argmax(masked_positions, dim=1)  # (batch_size,)
-    
-    # Check if any valid positions exist
-    has_valid = (valid_id_mask.sum(dim=1) > 0)  # (batch_size,)
-    
-    # Create a range tensor for masking
-    range_tensor = torch.arange(seq_len, device=device).unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len)
-    range_tensor = range_tensor.expand(batch_size, seq_len, -1)  # (batch_size, seq_len, seq_len)
-    
-    # Create mask condition: positions before last_valid_pos
-    last_pos_expanded = last_valid_pos.unsqueeze(1).unsqueeze(2)  # (batch_size, 1, 1)
-    mask_condition = range_tensor < last_pos_expanded  # (batch_size, seq_len, seq_len)
-    
-    # Apply validity check
-    has_valid_expanded = has_valid.unsqueeze(1).unsqueeze(2)  # (batch_size, 1, 1)
-    final_mask_condition = mask_condition & has_valid_expanded
-    
-    # Apply masking
-    new_mask = torch.where(final_mask_condition, torch.tensor(min_value, device=device), new_mask)
-    
-    # Restore dimensions
+    # Set non-True elements to a very small number for argmax
+    masked_col_indices = torch.where(combined_connection_mask, 
+                                     col_indices.float().expand_as(combined_connection_mask), 
+                                     torch.tensor(-1.0, device=device))
+
+    # Find the rightmost connected valid ID position for each (batch, row)
+    # last_connected_pos will be (batch_size, seq_len)
+    last_connected_pos = torch.argmax(masked_col_indices, dim=2)
+
+    # Identify where no valid connection was found (max value is -1.0)
+    no_connection_found = (masked_col_indices.max(dim=2).values == -1.0)
+    last_connected_pos[no_connection_found] = -1 # Sentinel value for no mask
+
+    # Create a range tensor for columns: (1, 1, seq_len)
+    mask_col_range = torch.arange(seq_len, device=device).unsqueeze(0).unsqueeze(0)
+
+    # Expand last_connected_pos to (batch_size, seq_len, 1) for broadcasting
+    last_pos_expanded = last_connected_pos.unsqueeze(2)
+
+    # Condition for masking: col_idx < last_connected_pos AND last_connected_pos is valid
+    mask_condition = (mask_col_range < last_pos_expanded) & (last_pos_expanded != -1) # (batch_size, seq_len, seq_len)
+
+    # Apply the mask
+    new_mask = torch.where(mask_condition, torch.tensor(min_value, device=device), new_mask)
+
+    # Restore dimensions if original_mask was 4D
     if squeeze_needed:
         new_mask = new_mask.unsqueeze(1)
-    
+
     return new_mask
 
 # Benchmarking function
@@ -247,7 +280,7 @@ def benchmark_mask_functions():
     import time
     
     # Test parameters
-    batch_size, seq_len = 8, 512
+    batch_size, seq_len = 2, 10
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # Create test data
@@ -297,6 +330,13 @@ def benchmark_mask_functions():
     torch.cuda.synchronize() if device.type == 'cuda' else None
     baseline_time = time.time() - start_time
     
+    print(f"Input: {tensor}")
+    print(f"Results optimized : { result1.to(torch.int32)[0]}")
+    print(f"Input: {tensor}")
+    print(f"Results ultraoptimized : { result2.to(torch.int32)[0]}") 
+    print(f"Input: {tensor}")
+    print(f"Results baseline: {result3.to(torch.int32)[0]}") 
+    
     print(f"baseline version: {baseline_time:.4f}s")
     print(f"Optimized version: {optimized_time:.4f}s")
     print(f"Ultra-optimized version: {ultra_optimized_time:.4f}s")
@@ -306,6 +346,7 @@ def benchmark_mask_functions():
     # Verify results are similar
     print(f"Results match: {torch.equal(result1.to(torch.int32), result2.to(torch.int32))}")
     print(f"Results match: {torch.equal(result3.to(torch.int32), result2.to(torch.int32))}") 
+    
     # print(f"Results match: {torch.allclose(result1, result2, atol=1e-6)}")
     # print(f"Results match: {torch.allclose(result3, result2, atol=1e-6)}")
     
