@@ -16,7 +16,7 @@ from ..sabiyarn.differential_attention import DiffAttnArgs
 from ..cut_cross_entropy import linear_cross_entropy
 from .utils import *
 from .constant_tokens import MASK
-from .training_attention_mask import create_causal_mask
+from .training_attention_mask import create_causal_mask, create_causal_mask_ultra_optimized
 import wandb
 from torch.optim import SGD, Adam, AdamW
 from bitsandbytes import optim  # For Adam8bit if using the bitsandbytes library
@@ -376,7 +376,7 @@ def estimate_loss(use_cce: bool = False):
             b = len(X)
             with ctx:
                 attn_mask = _prepare_mask_(b, block_size=block_size)
-                attn_mask = create_causal_mask(X, attn_mask.to("cuda"))
+                attn_mask = create_causal_mask_ultra_optimized(X, attn_mask.to("cuda"))
                 attn_mask.to(device)
                 hidden_states, logits = model(tokens=X, mask=attn_mask, start_pos=0)
                 if use_cce:

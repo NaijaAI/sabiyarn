@@ -280,7 +280,7 @@ def benchmark_mask_functions():
     import time
     
     # Test parameters
-    batch_size, seq_len = 2, 10
+    batch_size, seq_len = 10, 4096
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # Create test data
