@@ -181,6 +181,7 @@ class ModelArgs:
     route_scale: float = 1.0
     n_shared_experts: int = 1
     moe_inter_dim: int = 2048
+    score_function: str = "sigmoid"
     bias_update_speed: float = 0.001
     moe_aux_loss_weight: float = 0.01  # Weight for sequence-wise auxiliary loss
 
