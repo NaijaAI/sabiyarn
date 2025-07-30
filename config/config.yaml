@@ -60,6 +60,7 @@ model:
   attention_dropout: 0.0
   tokenizer:
     name: "Aletheia-ng/SabiYarn-125M"
+    num_proc: 64
 
 # adamw optimizer
 optimizer:

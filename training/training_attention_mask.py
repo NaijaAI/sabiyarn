@@ -306,10 +306,11 @@ def benchmark_mask_functions():
         _ = create_causal_mask_optimized(tensor, original_mask.clone())
         _ = create_causal_mask_ultra_optimized(tensor, original_mask.clone())
     
+    iters = 10
     # Benchmark optimized version
     torch.cuda.synchronize() if device.type == 'cuda' else None
     start_time = time.time()
-    for _ in range(100):
+    for _ in range(iters):
         result1 = create_causal_mask_optimized(tensor, original_mask.clone())
     torch.cuda.synchronize() if device.type == 'cuda' else None
     optimized_time = time.time() - start_time
@@ -317,7 +318,7 @@ def benchmark_mask_functions():
     # Benchmark ultra-optimized version
     torch.cuda.synchronize() if device.type == 'cuda' else None
     start_time = time.time()
-    for _ in range(100):
+    for _ in range(iters):
         result2 = create_causal_mask_ultra_optimized(tensor, original_mask.clone())
     torch.cuda.synchronize() if device.type == 'cuda' else None
     ultra_optimized_time = time.time() - start_time
@@ -325,7 +326,7 @@ def benchmark_mask_functions():
     # Benchmark baseline version
     torch.cuda.synchronize() if device.type == 'cuda' else None
     start_time = time.time()
-    for _ in range(100):
+    for _ in range(iters):
         result3 = create_causal_mask(tensor, original_mask.clone())
     torch.cuda.synchronize() if device.type == 'cuda' else None
     baseline_time = time.time() - start_time
