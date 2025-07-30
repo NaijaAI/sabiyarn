@@ -79,8 +79,9 @@ class TrainingConfig:
     n_activated_experts: int = 8
     moe_inter_dim: int = 2048
     n_shared_experts: int = 1
+    score_function: str = "sigmoid"
     bias_update_speed: float = 0.001
-    moe_aux_loss_weight: float = 0.01  # Weight for MoE sequence-wise auxiliary loss
+    moe_aux_loss_weight: float = 0.001  # Weight for MoE sequence-wise auxiliary loss
     
     # Multi-Token Prediction (only with MLA)
     use_multi_token_prediction: bool = True
@@ -127,7 +128,7 @@ class TrainingConfig:
     mask_id_value: int = 30  # ID value for custom masking
     
     # Data
-    dataset: str = "Aletheia-ng/wiki-yo"
+    dataset: str = "Aletheia-ng/pretrain_test"
     train_data_path: str = "./train.bin"
     eval_data_path: str = "./val.bin"
     
@@ -362,6 +363,7 @@ class SabiYarnTrainer:
             n_shared_experts=self.config.n_shared_experts,
             bias_update_speed=self.config.bias_update_speed,
             moe_aux_loss_weight=self.config.moe_aux_loss_weight,
+            score_function=self.config.score_function,
             
             # Multi-token prediction (only with MLA)
             multi_token_prediction=self.config.use_multi_token_prediction and self.config.attention_type == "MLA",
