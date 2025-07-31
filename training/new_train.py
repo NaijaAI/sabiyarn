@@ -8,11 +8,23 @@ Training script for SabiYarn models with support for:
 """
 
 import os
+import sys
 import time
 import math
+from datetime import datetime
+project_root = os.path.join(os.path.dirname(__file__), '..')
+sys.path.insert(0, project_root)
+# Load environment variables from .env file if it exists
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    ENV_FILE_LOADED = True
+except ImportError:
+    ENV_FILE_LOADED = False
+
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import structlog
 
 import torch
@@ -25,26 +37,26 @@ import numpy as np
 import wandb
 
 # SabiYarn imports
-from ..data import prepare
-from ..sabiyarn.model import ModelArgs, SabiYarn, AttentionType
-from ..sabiyarn.MLA import MLAConfig
-from ..sabiyarn.differential_attention import DiffAttnArgs
-from ..cut_cross_entropy import linear_cross_entropy
-from .utils import *
-from .constant_tokens import MASK
-from .training_attention_mask import create_causal_mask
+from data import prepare
+from sabiyarn.model import ModelArgs, SabiYarn, AttentionType
+from sabiyarn.MLA import MLAConfig
+from sabiyarn.differential_attention import DiffAttnArgs
+from cut_cross_entropy import linear_cross_entropy
+from training.utils import *
+from training.constant_tokens import MASK
+from training.training_attention_mask import create_causal_mask
+
+from transformers import AutoTokenizer
+from bitsandbytes import optim as bnb_optim
+
 
 try:
-    from transformers import AutoTokenizer
+    import psutil
+    import GPUtil
+    MONITORING_AVAILABLE = True
 except ImportError:
-    print("⚠️ transformers not available, tokenizer features disabled")
-    AutoTokenizer = None
-
-try:
-    from bitsandbytes import optim as bnb_optim
-except ImportError:
-    print("⚠️ bitsandbytes not available, 8-bit optimization disabled")
-    bnb_optim = None
+    print("⚠️ psutil/GPUtil not available, system monitoring disabled")
+    MONITORING_AVAILABLE = False
 
 LOG = structlog.stdlib.get_logger()
 
@@ -145,6 +157,15 @@ class TrainingConfig:
     wandb_log: bool = True
     wandb_project: str = "sabiyarn-new-training"
     wandb_run_name: str = "modern_training"
+    wandb_tags: list = field(default_factory=lambda: ["MLA", "MoE", "MTP", "DeepSeek"])
+    
+    # Advanced monitoring
+    log_grad_norm: bool = True
+    log_weights: bool = True  # Log weight distributions
+    log_system_metrics: bool = True
+    log_moe_metrics: bool = True  # Log MoE expert utilization
+    log_attention_metrics: bool = True  # Log attention statistics
+    monitor_interval: int = 50  # Log detailed metrics every N steps
     
     # Generation testing
     display_model_output_iter: int = 768
@@ -177,6 +198,7 @@ class SabiYarnTrainer:
         self.best_val_loss = 1e9
         self.local_iter_num = 0
         self.running_mfu = -1.0
+        self.step_start_time = time.time()
         
     def setup_environment(self):
         """Setup environment variables and device configuration."""
@@ -203,7 +225,7 @@ class SabiYarnTrainer:
         )
         
         # Initialize gradient scaler
-        self.scaler = torch.cuda.amp.GradScaler(enabled=(self.config.dtype == "float16"))
+        self.scaler = torch.amp.GradScaler('cuda',enabled=(self.config.dtype == "float16"))
         
     def setup_distributed(self):
         """Setup distributed training if available."""
@@ -254,12 +276,263 @@ class SabiYarnTrainer:
             os.makedirs(self.config.out_dir, exist_ok=True)
             
             if self.config.wandb_log:
+                # Check W&B authentication
+                self._check_wandb_auth()
+                
+                # Create dynamic run name with timestamp and key parameters
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                run_name = f"{self.config.wandb_run_name}_{self.config.attention_type}"
+                if self.config.use_moe:
+                    run_name += f"_moe{self.config.n_routed_experts}x{self.config.n_activated_experts}"
+                if self.config.use_multi_token_prediction:
+                    run_name += f"_mtp{self.config.num_prediction_tokens}"
+                run_name += f"_{timestamp}"
+                
+                # Enhanced W&B config
+                wandb_config = self.config.__dict__.copy()
+                wandb_config.update({
+                    "model_size": "TBD",  # Will be updated after model creation
+                    "dataset_name": self.config.dataset,
+                    "hardware": self._get_hardware_info(),
+                    "git_commit": self._get_git_commit(),
+                })
+                
                 wandb.init(
                     project=self.config.wandb_project,
-                    name=self.config.wandb_run_name,
-                    config=self.config.__dict__
+                    name=run_name,
+                    config=wandb_config,
+                    tags=self.config.wandb_tags,
+                    notes=f"SabiYarn training with {self.config.attention_type} attention",
+                    save_code=True
                 )
-                LOG.info("WandB logging initialized")
+                LOG.info(f"WandB logging initialized: {run_name}")
+    
+    def _check_wandb_auth(self):
+        """Check W&B authentication and provide helpful guidance."""
+        try:
+            # Try to get API key from various sources
+            api_key = (
+                os.getenv("WANDB_API_KEY") or 
+                wandb.api.api_key or
+                None
+            )
+            
+            if not api_key:
+                LOG.warning("⚠️ W&B API key not found!")
+                LOG.info("🔧 To authenticate with W&B, choose one of these methods:")
+                LOG.info("   1. Run: wandb login")
+                LOG.info("   2. Set environment variable: export WANDB_API_KEY=your_key")
+                LOG.info("   3. Create .env file with: WANDB_API_KEY=your_key")
+                LOG.info("   4. Get your key from: https://wandb.ai/authorize")
+                
+                # Try to authenticate interactively if possible
+                try:
+                    wandb.login()
+                    LOG.info("✅ W&B authentication successful!")
+                except Exception as e:
+                    LOG.error(f"❌ W&B authentication failed: {e}")
+                    LOG.info("💡 Continuing without W&B logging...")
+                    self.config.wandb_log = False
+                    return
+            else:
+                LOG.info("✅ W&B API key found")
+                
+        except Exception as e:
+            LOG.warning(f"⚠️ W&B authentication check failed: {e}")
+            LOG.info("💡 Continuing with W&B - it may prompt for login...")
+    
+    def _get_hardware_info(self) -> Dict[str, Any]:
+        """Get hardware information for logging."""
+        info = {}
+        
+        if MONITORING_AVAILABLE:
+            try:
+                info.update({
+                    "cpu_count": psutil.cpu_count(),
+                    "memory_gb": psutil.virtual_memory().total / (1024**3),
+                })
+            except:
+                pass
+        
+        if torch.cuda.is_available():
+            try:
+                info.update({
+                    "gpu_count": torch.cuda.device_count(),
+                    "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.device_count() > 0 else None,
+                    "cuda_version": torch.version.cuda,
+                })
+            except:
+                pass
+        
+        return info
+    
+    def _get_git_commit(self) -> Optional[str]:
+        """Get current git commit hash."""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"], 
+                capture_output=True, 
+                text=True, 
+                cwd=os.path.dirname(__file__)
+            )
+            return result.stdout.strip() if result.returncode == 0 else None
+        except:
+            return None
+    
+    def get_system_metrics(self) -> Dict[str, float]:
+        """Get current system metrics."""
+        metrics = {}
+        
+        if not MONITORING_AVAILABLE:
+            return metrics
+        
+        try:
+            # CPU and Memory
+            metrics["system/cpu_percent"] = psutil.cpu_percent()
+            memory = psutil.virtual_memory()
+            metrics["system/memory_percent"] = memory.percent
+            metrics["system/memory_available_gb"] = memory.available / (1024**3)
+        except:
+            pass
+        
+        # GPU metrics
+        if torch.cuda.is_available():
+            try:
+                gpus = GPUtil.getGPUs()
+                if gpus:
+                    gpu = gpus[0]  # Primary GPU
+                    metrics["system/gpu_utilization"] = gpu.load * 100
+                    metrics["system/gpu_memory_percent"] = gpu.memoryUtil * 100
+                    metrics["system/gpu_temperature"] = gpu.temperature
+            except:
+                pass  # GPU monitoring failed, continue without
+                
+            try:
+                # PyTorch GPU memory
+                metrics["system/gpu_memory_allocated_gb"] = torch.cuda.memory_allocated() / (1024**3)
+                metrics["system/gpu_memory_reserved_gb"] = torch.cuda.memory_reserved() / (1024**3)
+            except:
+                pass
+        
+        return metrics
+    
+    def get_moe_metrics(self, model) -> Dict[str, float]:
+        """Get MoE-specific metrics."""
+        metrics = {}
+        
+        if not self.config.use_moe:
+            return metrics
+            
+        raw_model = model.module if self.ddp else model
+        
+        # Find MoE layers
+        moe_layers = []
+        for name, module in raw_model.named_modules():
+            if hasattr(module, 'gate') and hasattr(module.gate, 'expert_bias'):
+                moe_layers.append((name, module))
+        
+        if moe_layers:
+            # Expert bias statistics
+            all_biases = []
+            for name, moe_layer in moe_layers:
+                expert_bias = moe_layer.gate.expert_bias.data
+                all_biases.append(expert_bias)
+                
+                # Per-layer metrics
+                metrics[f"moe/{name}/expert_bias_mean"] = expert_bias.mean().item()
+                metrics[f"moe/{name}/expert_bias_std"] = expert_bias.std().item()
+                metrics[f"moe/{name}/expert_bias_max"] = expert_bias.max().item()
+                metrics[f"moe/{name}/expert_bias_min"] = expert_bias.min().item()
+            
+            # Global MoE metrics
+            if all_biases:
+                global_bias = torch.cat(all_biases)
+                metrics["moe/global_expert_bias_mean"] = global_bias.mean().item()
+                metrics["moe/global_expert_bias_std"] = global_bias.std().item()
+        
+        return metrics
+    
+    def get_gradient_metrics(self, model) -> Dict[str, float]:
+        """Get gradient statistics."""
+        metrics = {}
+        
+        total_norm = 0.0
+        param_count = 0
+        
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                param_norm = param.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+                param_count += 1
+                
+                # Log gradients for key components
+                if any(key in name for key in ['gate', 'expert', 'attention', 'lm_head']):
+                    metrics[f"grad/{name.replace('.', '/')}_norm"] = param_norm.item()
+        
+        if param_count > 0:
+            metrics["grad/global_norm"] = total_norm ** 0.5
+            metrics["grad/param_count"] = param_count
+        
+        return metrics
+    
+    def get_weight_metrics(self, model) -> Dict[str, float]:
+        """Get weight distribution statistics."""
+        metrics = {}
+        
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                weight_data = param.data
+                
+                # Log statistics for key components
+                if any(key in name for key in ['gate', 'expert', 'attention', 'lm_head', 'tok_embeddings']):
+                    clean_name = name.replace('.', '/')
+                    metrics[f"weights/{clean_name}_mean"] = weight_data.mean().item()
+                    metrics[f"weights/{clean_name}_std"] = weight_data.std().item()
+                    metrics[f"weights/{clean_name}_max"] = weight_data.max().item()
+                    metrics[f"weights/{clean_name}_min"] = weight_data.min().item()
+        
+        return metrics
+    
+    def log_advanced_metrics(self, loss: torch.Tensor, model, optimizer):
+        """Log comprehensive metrics for SOTA monitoring."""
+        if not self.config.wandb_log or not self.master_process:
+            return
+        
+        # Base metrics
+        metrics = {
+            "train/loss": loss.item(),
+            "train/lr": optimizer.param_groups[0]["lr"],
+            "train/epoch": self.iter_num * self.config.train_batch_size / 50000,  # Approximate
+            "train/step": self.iter_num,
+        }
+        
+        # Performance metrics
+        current_time = time.time()
+        if hasattr(self, 'step_start_time'):
+            step_time = current_time - self.step_start_time
+            metrics["perf/tokens_per_sec"] = self.tokens_per_iter / step_time
+            metrics["perf/step_time_ms"] = step_time * 1000
+        self.step_start_time = current_time
+        
+        # Gradient monitoring
+        if self.config.log_grad_norm:
+            metrics.update(self.get_gradient_metrics(model))
+        
+        # Weight monitoring (less frequent)
+        if self.config.log_weights and self.iter_num % (self.config.monitor_interval * 4) == 0:
+            metrics.update(self.get_weight_metrics(model))
+        
+        # MoE-specific metrics
+        if self.config.log_moe_metrics and self.config.use_moe:
+            metrics.update(self.get_moe_metrics(model))
+        
+        # System metrics (less frequent)
+        if self.config.log_system_metrics and self.iter_num % self.config.monitor_interval == 0:
+            metrics.update(self.get_system_metrics())
+        
+        # Log to W&B
+        wandb.log(metrics, step=self.iter_num)
                 
     def setup_data(self):
         """Setup data loading."""
@@ -283,7 +556,12 @@ class SabiYarnTrainer:
             # Create model configuration based on attention type
             model_args = self.create_model_args()
             self.model = SabiYarn(model_args)
-            LOG.info(f"Model initialized from scratch: {self.model.get_model_size()}")
+            model_size_info = self.model.get_model_size()
+            LOG.info(f"Model initialized from scratch: {model_size_info}")
+            
+            # Update W&B with actual model size
+            if self.config.wandb_log and self.master_process:
+                wandb.config.update({"model_size": model_size_info}, allow_val_change=True)
             
         elif self.config.init_from == "resume":
             # Load from checkpoint
@@ -492,7 +770,7 @@ class SabiYarnTrainer:
             )
             
             # When MTP is enabled, use ONLY MTP loss to train both main model and MTP modules
-            from ..sabiyarn.multi_token_loss import MultiTokenLoss
+            from sabiyarn.multi_token_loss import MultiTokenLoss
             
             mtp_loss_fn = MultiTokenLoss(
                 num_prediction_tokens=self.config.num_prediction_tokens,
@@ -694,13 +972,19 @@ class SabiYarnTrainer:
                 LOG.info(f"Step {self.iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
                 
                 if self.config.wandb_log:
-                    wandb.log({
+                    eval_metrics = {
                         "iter": self.iter_num,
-                        "train/loss": losses["train"],
-                        "val/loss": losses["val"],
-                        "lr": lr,
-                        "mfu": self.running_mfu * 100,
-                    })
+                        "eval/train_loss": losses["train"],
+                        "eval/val_loss": losses["val"],
+                        "train/lr": lr,
+                        "perf/mfu_percent": self.running_mfu * 100,
+                    }
+                    
+                    # Add system metrics during evaluation
+                    if self.config.log_system_metrics:
+                        eval_metrics.update(self.get_system_metrics())
+                    
+                    wandb.log(eval_metrics, step=self.iter_num)
                     
                 if losses["val"] < self.best_val_loss or self.config.always_save_checkpoint:
                     self.best_val_loss = losses["val"]
@@ -749,6 +1033,9 @@ class SabiYarnTrainer:
             if self.iter_num % self.config.log_interval == 0 and self.master_process:
                 lossf = loss.item() * self.config.gradient_accumulation_steps
                 LOG.info(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms")
+                
+                # Log advanced metrics
+                self.log_advanced_metrics(loss * self.config.gradient_accumulation_steps, self.model, self.optimizer)
                 
             self.iter_num += 1
             self.local_iter_num += 1
