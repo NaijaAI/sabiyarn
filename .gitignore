@@ -7,7 +7,7 @@ __pycache__/
 *.so
 
 wandb/
-.env
+*.bin
 
 # Distribution / packaging
 .Python
