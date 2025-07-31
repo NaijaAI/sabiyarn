@@ -20,7 +20,11 @@ class AttentionType(str, Enum):
     DIFFERENTIAL_ATTENTION = "differential_attention"
     MLA = "MLA"
 
-
+class LayerSharingStrategy(Enum):
+    ALL_OVER = "repeat_all_over"
+    IMMEDIATE = "immediate"
+    DEFAULT = "default"
+    
 def _validate_attention_config(args: 'ModelArgs') -> None:
     """
     Validate attention configuration for consistency.
@@ -190,6 +194,7 @@ class ModelArgs:
     use_j: bool = True
     tie_weights: bool = True
     attention_type: str = AttentionType.SELF_ATTENTION
+    layer_sharing: LayerSharingStrategy = LayerSharingStrategy.IMMEDIATE
     diff_attn_args: Optional[DiffAttnArgs] = None
     mla_config: Optional[MLAConfig] = None
     
@@ -582,7 +587,8 @@ class SabiYarn(nn.Module):
             params.vocab_size,
             params.dim,
         )
-
+        self.layer_sharing_strategy = params.layer_sharing_strategy
+        
         # Create layers with optional layer sharing (MobileLLM-style immediate block-wise repeat)
         if params.layer_sharing:
             # Create only unique layers
@@ -595,16 +601,28 @@ class SabiYarn(nn.Module):
             for layer_id in range(self.n_unique_layers):
                 self.unique_layers.append(TransformerBlock(layer_id, params, use_j_linear=params.use_j))
             
-            # Create execution mapping for immediate block-wise repeat
-            self.layer_execution_order = []
-            for _ in range(self.repeat_factor):
-                for unique_id in range(self.n_unique_layers):
-                    self.layer_execution_order.append(unique_id)
+            if self.layer_sharing_strategy == LayerSharingStrategy.ALL_OVER:
+                # Create execution mapping for immediate block-wise repeat
+                self.layer_execution_order = []
+                for _ in range(self.repeat_factor):
+                    for unique_id in range(self.n_unique_layers):
+                        self.layer_execution_order.append(unique_id)
+                
+            elif self.layer_sharing_strategy == LayerSharingStrategy.IMMEDIATE:
+                # Create execution order: immediate block-wise sharing
+                # This will repeat each group of unique layers in sequence
+                self.layer_execution_order = [
+                    unique_id
+                    for unique_id in range(self.n_unique_layers)
+                    for _ in range(self.repeat_factor)
+                ]
+                
         else:
             # Traditional: each layer is unique
             self.layers = torch.nn.ModuleList()
-            for layer_id in range(params.n_layers):
+            for layer_id in range(self.n_layers):
                 self.layers.append(TransformerBlock(layer_id, params, use_j_linear=params.use_j))
+            self.layer_execution_order = [unique_id for unique_id in self.layers]
 
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.lm_head = nn.Linear(
