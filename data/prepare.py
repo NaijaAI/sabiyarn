@@ -13,6 +13,8 @@ from transformers import AutoTokenizer
 import json
 from .constant_tokens import end_of_text_token
 import structlog
+from dotenv import load_dotenv
+load_dotenv()
 
 LOG = structlog.stdlib.get_logger()
 
