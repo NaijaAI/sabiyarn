@@ -36,8 +36,8 @@ block_size: 4096
 # dataset
 dataset: "Aletheia-ng/coqa-stories"
 num_proc: 128
-train_data_path: "./train.bin" # CHANGE
-eval_data_path: "./val.bin"
+train_data_path: "/data/train.bin" # CHANGE
+eval_data_path: "/data/val.bin"
 test_size: 0.2 # The fraction of the original test set to use during training (done to save compute time). It should be a value between 0 and 1.
 data_version: null
 max_length: 512
