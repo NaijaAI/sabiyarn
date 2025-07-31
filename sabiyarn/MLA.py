@@ -298,6 +298,9 @@ def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
     freqs_cis = freqs_cis[:seq_len]  # Take only the needed sequence positions
     freqs_cis = freqs_cis.view(1, seq_len, 1, x_complex.size(-1))
     
+    # Ensure freqs_cis is on the same device as x_complex
+    freqs_cis = freqs_cis.to(device=x_complex.device, dtype=x_complex.dtype)
+    
     y = torch.view_as_real(x_complex * freqs_cis).flatten(3)
     return y.to(dtype)
 
