@@ -1,3 +1,4 @@
+# sequence wise loss adapted from https://gist.github.com/TeaPoly/b5e046d9efa93fa7e38880b4c7e5ec5f
 import dataclasses
 from typing import List, Tuple, TYPE_CHECKING
 
