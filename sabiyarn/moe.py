@@ -177,11 +177,12 @@ class Gate(nn.Module):
         """
         Update expert bias based on counts.
         """
-        if world_size > 1 and dist.is_available() and dist.is_initialized():
-            dist.all_reduce(counts, dist.ReduceOp.SUM)
-        avg_count = counts.float().mean()
-        error = avg_count - counts.float()
-        self.expert_bias.add_(torch.sign(error) * self.bias_update_speed)
+        with torch.no_grad():
+            if world_size > 1 and dist.is_available() and dist.is_initialized():
+                dist.all_reduce(counts, dist.ReduceOp.SUM)
+            avg_count = counts.float().mean()
+            error = avg_count - counts.float()
+            self.expert_bias.add_(torch.sign(error) * self.bias_update_speed)
         
 
 class Expert(nn.Module):
