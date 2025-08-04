@@ -14,7 +14,7 @@ import math
 from datetime import datetime
 project_root = os.path.join(os.path.dirname(__file__), '..')
 sys.path.insert(0, project_root)
-# Load environment variables from .env file if it exists
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -62,8 +62,6 @@ LOG = structlog.stdlib.get_logger()
 
 @dataclass
 class TrainingConfig:
-    """Comprehensive training configuration for SabiYarn models."""
-    
     # Model Architecture
     attention_type: str = "MLA"  # "self_attention", "differential_attention", "MLA"
     dim: int = 2048
@@ -157,7 +155,7 @@ class TrainingConfig:
     wandb_log: bool = True
     wandb_project: str = "sabiyarn-new-training"
     wandb_run_name: str = "modern_training"
-    wandb_tags: list = field(default_factory=lambda: ["MLA", "MoE", "MTP", "DeepSeek"])
+    wandb_tags: list = field(default_factory=lambda: ["MLA", "MoE", "MTP", "SabiYarn"])
     
     # Advanced monitoring
     log_grad_norm: bool = True
@@ -180,9 +178,7 @@ class TrainingConfig:
     auto_detect_distributed: bool = True
 
 
-class SabiYarnTrainer:
-    """Modern trainer for SabiYarn models with comprehensive feature support."""
-    
+class SabiYarnTrainer:   
     def __init__(self, config: TrainingConfig):
         self.config = config
         self.setup_environment()
@@ -577,7 +573,7 @@ class SabiYarnTrainer:
             
             LOG.info(f"Model resumed from checkpoint: {self.model.get_model_size()}")
             
-        self.model.to(self.config.device)
+        self.model.to(self.config.device, dtype=self.config.dtype)
         
     def create_model_args(self) -> ModelArgs:
         """Create ModelArgs based on training configuration."""
@@ -731,6 +727,15 @@ class SabiYarnTrainer:
         x = torch.stack(x)
         y = torch.stack(y)
         
+        # Debug: Check for invalid tokens in raw data
+        if x.max() >= self.config.vocab_size:
+            LOG.error(f"Invalid input tokens in batch! Max: {x.max()}, vocab_size: {self.config.vocab_size}")
+            LOG.error(f"Invalid x values: {x[x >= self.config.vocab_size]}")
+            
+        if y.max() >= self.config.vocab_size:
+            LOG.error(f"Invalid target tokens in batch! Max: {y.max()}, vocab_size: {self.config.vocab_size}")
+            LOG.error(f"Invalid y values: {y[y >= self.config.vocab_size]}")
+        
         if self.device_type == "cuda":
             x = x.pin_memory().to(self.config.device, non_blocking=True)
             y = y.pin_memory().to(self.config.device, non_blocking=True)
@@ -760,6 +765,7 @@ class SabiYarnTrainer:
         
     def compute_loss(self, tokens: torch.Tensor, targets: torch.Tensor):
         """Compute loss with support for different loss functions and multi-token prediction."""
+        
         # Prepare attention mask
         mask = self.prepare_attention_mask(tokens)
         
@@ -791,8 +797,7 @@ class SabiYarnTrainer:
                     # Get the final hidden states from MTP module
                     mtp_module = raw_model.multi_token_predictor
                     if hasattr(mtp_module, 'output_norm'):
-                        # This would be the normalized output from MTP transformer block
-                        # We'll need to modify the forward pass to return this
+
                         pass
                     mtp_output_heads = mtp_module.output_heads
                 
@@ -1052,13 +1057,7 @@ class SabiYarnTrainer:
 
 def main():
     """Main entry point."""
-    # Create training configuration
     config = TrainingConfig()
-    
-    # Override config from environment or command line if needed
-    # You can add argparse here or load from config files
-    
-    # Initialize and run trainer
     trainer = SabiYarnTrainer(config)
     trainer.train()
 
