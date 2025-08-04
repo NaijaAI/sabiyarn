@@ -173,7 +173,7 @@ class RowParallelLinear(Linear):
             y += self.bias
         return y
     
-class DeepseekV2RMSNorm(nn.Module):
+class RMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(hidden_size))
@@ -344,17 +344,15 @@ class MLA(nn.Module):
             self.hidden_size,
             self.q_lora_rank,
             bias=config.attention_bias,
-            dtype=torch.bfloat16,
         )
-        self.q_down_norm = DeepseekV2RMSNorm(self.q_lora_rank)
+        self.q_down_norm = RMSNorm(self.q_lora_rank)
 
         self.kv_down_proj = nn.Linear(
             self.hidden_size,
             self.kv_lora_rank + config.qk_rope_head_dim,
             bias=config.attention_bias,
-            dtype=torch.bfloat16,
         )  # qk_rope_head_dim usually 64
-        self.kv_down_norm = DeepseekV2RMSNorm(self.kv_lora_rank)
+        self.kv_down_norm = RMSNorm(self.kv_lora_rank)
         # after down, two parts, need to split
 
         # 2.2 up compression
@@ -418,15 +416,34 @@ class MLA(nn.Module):
         kv_up_proj = self.kv_up_proj.weight if self.kv_up_proj.scale is None else weight_dequant(self.kv_up_proj.weight, self.kv_up_proj.scale, block_size)
         kv_up_proj = kv_up_proj.view(self.n_local_heads, -1, self.kv_lora_rank)
         q_nope = torch.einsum("bshd,hdc->bshc", q_nope, kv_up_proj[:, :self.qk_nope_head_dim])
-        self.kv_cache[:bsz, start_pos:end_pos] = self.kv_down_norm(c_kv)
-        self.pe_cache[:bsz, start_pos:end_pos] = k_rope.squeeze(2)
+        # Only use caching during inference, not training
+        if not self.training:
+            self.kv_cache[:bsz, start_pos:end_pos] = self.kv_down_norm(c_kv)
+            self.pe_cache[:bsz, start_pos:end_pos] = k_rope.squeeze(2)
         
         # Transpose query tensors to have correct dimension order for einsum
         q_nope = q_nope.transpose(1, 2)  # (batch_size, num_heads, seq_len, head_dim)
         q_rope = q_rope.transpose(1, 2)  # (batch_size, num_heads, seq_len, head_dim)
         
-        scores = (torch.einsum("bhsc,btc->bhst", q_nope, self.kv_cache[:bsz, :end_pos]) +
-                      torch.einsum("bhsr,btr->bhst", q_rope, self.pe_cache[:bsz, :end_pos])) * self.softmax_scale
+        # Compute current KV values for this forward pass
+        kv_current = self.kv_down_norm(c_kv)
+        k_rope_current = k_rope.squeeze(2)
+        
+        if self.training:
+            # During training: use current values directly
+            kv_to_use = kv_current
+            pe_to_use = k_rope_current
+        else:
+            # During inference: use cached values that include history
+            kv_to_use = self.kv_cache[:bsz, :end_pos]
+            pe_to_use = self.pe_cache[:bsz, :end_pos]
+        
+        scores = (torch.einsum("bhsc,btc->bhst", q_nope, kv_to_use) +
+                      torch.einsum("bhsr,btr->bhst", q_rope, pe_to_use)) * self.softmax_scale
+        
+        # Project KV values for attention computation
+        kv_cache_projected = torch.einsum("btc,hdc->bhtd", kv_to_use, kv_up_proj[:, -self.v_head_dim:])
+        
         if mask is not None:
             scores = scores.masked_fill(mask == 0, float("-inf"))
         else:
@@ -438,9 +455,6 @@ class MLA(nn.Module):
         
         scores = F.softmax(scores, dim=-1).type_as(x)
         # scores = F.dropout(scores, p=self.attention_dropout, training=self.training)
-        
-        # Project kv_cache through up-projection to get the full value representations
-        kv_cache_projected = torch.einsum("btc,hdc->bhtd", self.kv_cache[:bsz, :end_pos], kv_up_proj[:, -self.v_head_dim:])
         
         output = torch.einsum("bhst,bhtd->bhsd", scores, kv_cache_projected)
         output = output.transpose(1, 2).flatten(2)  # Transpose back and flatten
