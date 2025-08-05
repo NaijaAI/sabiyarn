@@ -13,7 +13,8 @@ import structlog
 from torch.nn import functional as F
 
 from ..data import prepare
-from ..sabiyarn.model import ModelArgs, SabiYarn, MoeArgs
+from ..sabiyarn.model import ModelArgs, SabiYarn
+from ..sabiyarn.moe import MoE
 from ..sabiyarn.differential_attention import DiffAttnArgs
 from ..cut_cross_entropy import linear_cross_entropy
 from .utils import *
