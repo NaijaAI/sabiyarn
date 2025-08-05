@@ -14,11 +14,12 @@ from torch.nn import functional as F
 from ..data import prepare
 from ..sabiyarn.model import ModelArgs, SabiYarn
 from ..sabiyarn.moe import MoE
+from ..sabiyarn.model import ModelArgs, SabiYarn, MoeArgs
 from ..sabiyarn.differential_attention import DiffAttnArgs
 from ..cut_cross_entropy import linear_cross_entropy
 from .utils import *
 from .constant_tokens import MASK
-from .training_attention_mask import create_causal_mask
+from .training_attention_mask import create_causal_mask, create_causal_mask_ultra_optimized, create_causal_mask_optimized
 import wandb
 from torch.optim import SGD, Adam, AdamW
 from bitsandbytes import optim  # For Adam8bit if using the bitsandbytes library
@@ -125,9 +126,7 @@ config = {k: globals()[k] for k in config_keys}
 # will be useful for logging
 
 # -----------------------------------------------------------------------------
-# Download all the relevant datasets, tokenize and push to a binary file
-LOG.info("Downloading and preprocessing tokens...")
-prepare.run()
+# Don't add data download to this script because it keeps GPU idle!!!!!!!!!
 
 # Start Training Model
 LOG.info("starting training...")
@@ -199,7 +198,8 @@ def get_batch(split, verbose=False):
         for i in ix
     ]
     y = [
-        mask_long_sequences(process_labels(sample.clone(), MASK), mask_value=MASK)
+        process_labels_optimized(sample.clone(), MASK)
+        # mask_long_sequences(process_labels(sample.clone(), MASK), mask_value=MASK)
         for sample in y
     ]
     x = torch.stack(x)
@@ -379,7 +379,7 @@ def estimate_loss(use_cce: bool = False):
             b = len(X)
             with ctx:
                 attn_mask = _prepare_mask_(b, block_size=block_size)
-                attn_mask = create_causal_mask(X, attn_mask.to("cuda"))
+                attn_mask = create_causal_mask_optimized(X, attn_mask.to("cuda"))
                 attn_mask.to(device)
                 hidden_states, logits = model(tokens=X, mask=attn_mask, start_pos=0)
                 if use_cce:
@@ -523,13 +523,14 @@ def train():
                         hidden_states,
                         model.lm_head.weight,
                         Y,
+                        ignore_index = MASK,
                         shift=True,
                         impl="torch_compile",
                     )
                 else:
 
                     loss = F.cross_entropy(
-                        logits.view(-1, logits.size(-1)), Y.view(-1), ignore_index=-100
+                        logits.view(-1, logits.size(-1)), Y.view(-1), ignore_index=MASK
                     )
                     loss = (
                         loss / gradient_accumulation_steps
