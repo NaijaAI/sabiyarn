@@ -10,6 +10,7 @@ from datasets import load_dataset
 from dotenv import load_dotenv
 from omegaconf import OmegaConf
 from transformers import AutoTokenizer
+from huggingface_hub import list_repo_files
 import json
 from .constant_tokens import end_of_text_token
 import structlog
@@ -107,7 +108,7 @@ def write_to_memmap(dset, filename, dtype, log_prefix=""):
     LOG.info(f"{log_prefix} write to bin file complete...")
 
 
-def run(config, datasets_list, num_proc_load_dataset, read_token, num_proc, process_one_file_at_a_time):
+def run(datasets_list, num_proc_load_dataset):
     """
     Main function to process and tokenize datasets, saving to memory-mapped files.
     """
@@ -135,7 +136,7 @@ def run(config, datasets_list, num_proc_load_dataset, read_token, num_proc, proc
                 dataset_name,
                 num_proc=num_proc_load_dataset,
                 trust_remote_code=True,
-                token=read_token,
+                token=READ_TOKEN,
                 verification_mode="no_checks",
             )
             # By default only contains the 'train' split, so create a test split
@@ -167,14 +168,14 @@ def run(config, datasets_list, num_proc_load_dataset, read_token, num_proc, proc
                 write_to_memmap(dset, filename, np.uint16, log_prefix=f"[{dataset_name} - {split}]")
             
             # For this mode, consider the whole dataset as processed once done
-            all_files_in_repo = list_repo_files(dataset_name, repo_type="dataset", token=read_token)
+            all_files_in_repo = list_repo_files(dataset_name, repo_type="dataset", token=READ_TOKEN)
             current_dataset_processed_files.extend(all_files_in_repo)
             # Remove duplicates if any
             current_dataset_processed_files = list(set(current_dataset_processed_files))
 
 
         else: # PROCESS_ONE_FILE_AT_A_TIME
-            all_files = list_repo_files(dataset_name, repo_type="dataset", token=read_token)
+            all_files = list_repo_files(dataset_name, repo_type="dataset", token=READ_TOKEN)
             
             files_to_process = [f for f in all_files if f not in current_dataset_processed_files]
 
@@ -191,7 +192,7 @@ def run(config, datasets_list, num_proc_load_dataset, read_token, num_proc, proc
                     data_files=[file],
                     num_proc=num_proc_load_dataset,
                     trust_remote_code=True, # Added this for consistency with first branch
-                    token=read_token, # Added this for consistency
+                    token=READ_TOKEN, # Added this for consistency
                     verification_mode="no_checks",
                 )
 
@@ -234,7 +235,7 @@ def run(config, datasets_list, num_proc_load_dataset, read_token, num_proc, proc
         files_processed[dataset_name] = current_dataset_processed_files
         # For the `PROCESS_ONE_FILE_AT_A_TIME = False` case, we save after each dataset too
         # To avoid data loss if crash between datasets.
-        if not process_one_file_at_a_time:
+        if not PROCESS_ONE_FILE_AT_A_TIME:
              with open("data_struct.json", "w") as f:
                 json.dump(files_processed, f, indent=4)
              LOG.info(f"Successfully processed and saved progress for entire dataset '{dataset_name}'.")
