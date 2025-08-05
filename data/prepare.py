@@ -177,7 +177,7 @@ def run(datasets_list, num_proc_load_dataset):
         else: # PROCESS_ONE_FILE_AT_A_TIME
             all_files = list_repo_files(dataset_name, repo_type="dataset", token=READ_TOKEN)
             
-            files_to_process = [f for f in all_files if f not in current_dataset_processed_files]
+            files_to_process = [f for f in all_files if f not in current_dataset_processed_files and f.endswith('.parquet')]
 
             if not files_to_process:
                 LOG.info(f"All files for dataset '{dataset_name}' already processed.")
