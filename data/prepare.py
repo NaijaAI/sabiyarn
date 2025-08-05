@@ -16,7 +16,7 @@ import structlog
 from dotenv import load_dotenv
 load_dotenv()
 
-load_dotenv(env_path)
+load_dotenv()
 LOG = structlog.stdlib.get_logger()
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
