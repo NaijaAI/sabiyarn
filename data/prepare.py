@@ -23,9 +23,9 @@ os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(current_dir))
-env_path = os.path.join(project_root, ".env")
 
-config = OmegaConf.load("../config/config.yaml")
+config_path = os.path.join(project_root, "config", "config.yaml")
+config = OmegaConf.load(config_path)
 
 READ_TOKEN = os.getenv("HF_API_KEY")
 num_proc = config.model.tokenizer.num_proc
