@@ -220,7 +220,7 @@ def run(datasets_list, num_proc_load_dataset):
 
                 LOG.info("Concatenating and binarizing splits...")
                 for split, dset in tokenized_dataset_file.items():
-                    filename = config.train_data_path if split.lower() == "train" else config.eval_data_path
+                    filename = config.data.train_data_path if split.lower() == "train" else config.eval_data_path
                     write_to_memmap(dset, filename, np.uint16, log_prefix=f"[{file} - {split}]")
 
                 # Update processed files immediately after a file is successfully processed

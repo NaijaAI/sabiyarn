@@ -27,12 +27,12 @@ wandb:
 # data
 data: 
   dataset : "Aletheia-ng/wiki-yo"
-  train_data_path : "./train.bin"
-  eval_data_path : "./val.bin"
+  train_data_path : "data/train.bin"
+  eval_data_path : "data/val.bin"
 
 # model
 model:
-  vocab_size : 52050
+  vocab_size : 52000
   n_layers : 24
   n_heads : 8
   dropout : 0.0  # for pretraining 0 is good, for finetuning try 0.1+
