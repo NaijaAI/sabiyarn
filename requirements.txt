@@ -5,7 +5,7 @@ fairscale==0.4.13
 fire==0.7.0
 huggingface_hub==0.27.1
 python-dotenv
-modal==1.0.0
+modal==1.1.1
 numpy==2.2.2
 omegaconf==2.3.0
 pydantic==2.10.6
@@ -20,3 +20,5 @@ triton==3.2.0
 wandb==0.19.5
 transformers==4.46.3
 safetensors==0.4.5
+psutil
+GPUtil

@@ -12,12 +12,6 @@ except ImportError:
 
 
 class MultiTokenLoss(nn.Module):
-    """
-    Loss function for DeepSeek-style multi-token prediction.
-    Computes the average cross-entropy loss across all prediction depths,
-    multiplied by a weighting factor. Supports Cut Cross Entropy for memory efficiency.
-    """
-    
     def __init__(self, num_prediction_tokens: int, mtp_loss_weight: float = 1.0, use_cut_cross_entropy: bool = True):
         super().__init__()
         self.num_prediction_tokens = num_prediction_tokens
@@ -52,7 +46,6 @@ class MultiTokenLoss(nn.Module):
                 pred_targets = targets[:, target_start:target_end]  # (B, S)
                 
                 if self.use_cut_cross_entropy and mtp_hidden_states is not None and mtp_output_heads is not None and linear_cross_entropy is not None:
-                    # Use Cut Cross Entropy for memory efficiency
                     try:
                         loss = linear_cross_entropy(
                             mtp_hidden_states,  # Use MTP hidden states
@@ -67,7 +60,7 @@ class MultiTokenLoss(nn.Module):
                         loss = F.cross_entropy(
                             pred_logits.reshape(-1, vocab_size),
                             pred_targets.reshape(-1),
-                            ignore_index=-1
+                            ignore_index=-100
                         )
                 else:
                     # Standard cross-entropy
@@ -75,7 +68,7 @@ class MultiTokenLoss(nn.Module):
                     loss = F.cross_entropy(
                         pred_logits.reshape(-1, vocab_size),
                         pred_targets.reshape(-1),
-                        ignore_index=-1
+                        ignore_index=-100
                     )
                 losses.append(loss)
                 
@@ -85,40 +78,3 @@ class MultiTokenLoss(nn.Module):
             return self.mtp_loss_weight * avg_loss
         else:
             return torch.tensor(0.0, device=multi_token_logits.device)
-
-
-def compute_combined_loss(next_token_logits: torch.Tensor, 
-                         multi_token_logits: Optional[torch.Tensor],
-                         targets: torch.Tensor,
-                         multi_token_loss_fn: Optional[MultiTokenLoss] = None) -> dict:
-    """
-    Compute combined loss for standard next-token prediction and multi-token prediction.
-    
-    Args:
-        next_token_logits: (batch_size, seq_len, vocab_size) - Standard next-token logits
-        multi_token_logits: (batch_size, seq_len, num_prediction_tokens, vocab_size) - MTP logits
-        targets: (batch_size, seq_len + num_prediction_tokens) - Extended targets
-        multi_token_loss_fn: Multi-token loss function
-        
-    Returns:
-        Dictionary with loss components
-    """
-    # Standard next-token loss
-    next_token_loss = F.cross_entropy(
-        next_token_logits.reshape(-1, next_token_logits.size(-1)),
-        targets[:, 1:targets.shape[1] - (multi_token_logits.shape[2] if multi_token_logits is not None else 0)].reshape(-1),
-        ignore_index=-1
-    )
-    
-    loss_dict = {
-        'next_token_loss': next_token_loss,
-        'total_loss': next_token_loss
-    }
-    
-    # Multi-token loss (if enabled)
-    if multi_token_logits is not None and multi_token_loss_fn is not None:
-        multi_token_loss = multi_token_loss_fn(multi_token_logits, targets)
-        loss_dict['multi_token_loss'] = multi_token_loss
-        loss_dict['total_loss'] = next_token_loss + multi_token_loss
-    
-    return loss_dict

@@ -185,6 +185,7 @@ class ModelArgs:
     route_scale: float = 1.0
     n_shared_experts: int = 1
     moe_inter_dim: int = 2048
+    score_function: str = "sigmoid"
     bias_update_speed: float = 0.001
     moe_aux_loss_weight: float = 0.01  # Weight for sequence-wise auxiliary loss
 
@@ -587,9 +588,9 @@ class SabiYarn(nn.Module):
             params.vocab_size,
             params.dim,
         )
+
         self.layer_sharing_strategy = params.layer_sharing_strategy
-        
-        # Create layers with optional layer sharing (MobileLLM-style immediate block-wise repeat)
+        # Create layers with optional layer sharing 
         if params.layer_sharing:
             # Create only unique layers
             self.unique_layers = torch.nn.ModuleList()
@@ -742,11 +743,6 @@ class SabiYarn(nn.Module):
             if mask is None and seqlen > 1:
                 mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
                 mask = torch.triu(mask, diagonal=1)
-
-                # When performing key-value caching, we compute the attention scores
-                # only for the new sequence. Thus, the matrix of scores is of size
-                # (seqlen, cache_len + seqlen), and the only masked entries are (i, j) for
-                # j > cache_len + i, since row i corresponds to token cache_len + i.
                 mask = torch.hstack(
                     [torch.zeros((seqlen, start_pos), device=tokens.device), mask]
                 ).type_as(h)
@@ -791,7 +787,7 @@ class SabiYarn(nn.Module):
             dist.all_gather(all_logits, logits)
             logits = torch.cat(all_logits, dim=-1)
             
-            # Also handle multi-token logits
+          
             if multi_token_logits is not None:
                 # Gather multi-token logits across devices
                 all_multi_logits = [torch.empty_like(multi_token_logits) for _ in range(self.params.world_size)]
@@ -807,10 +803,7 @@ class SabiYarn(nn.Module):
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, use_multi_token=False):
         """
-        Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
-        the sequence max_new_tokens times, feeding the predictions back into the model each time.
-        Most likely you'll want to make sure to be in model.eval() mode of operation for this.
-        
+        Generate text using the model.
         Args:
             idx: Input token indices (batch_size, seq_len)
             max_new_tokens: Maximum number of new tokens to generate
@@ -830,27 +823,18 @@ class SabiYarn(nn.Module):
             if use_multi_token and self.use_multi_token:
                 _, logits, multi_token_logits = self(idx_cond, start_pos=0, return_multi_token=True)
                 
-                # For generation, we can use the first prediction head from multi-token logits
-                # or combine predictions in some way
                 logits = logits[:, -1, :] / temperature
-                
-                # Optionally, you could use multi-token predictions for faster generation
-                # by predicting multiple tokens at once, but for simplicity, we'll stick to single-token
-                
+
             else:
                 _, logits = self(idx_cond, start_pos=0)
-                # pluck the logits at the final step and scale by desired temperature
+              
                 logits = logits[:, -1, :] / temperature
             
-            # optionally crop the logits to only the top k options
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < v[:, [-1]]] = -float("Inf")
-            # apply softmax to convert logits to (normalized) probabilities
             probs = F.softmax(logits, dim=-1)
-            # sample from the distribution
             idx_next = torch.multinomial(probs, num_samples=1)
-            # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
 
         return idx

@@ -1,5 +1,5 @@
 from transformers import AutoTokenizer
-
+MASK=-100
 tokenizer = AutoTokenizer.from_pretrained("BeardedMonster/SabiYarn-125M")
 # tokenizer = AutoTokenizer.from_pretrained("Aletheia-ng/SabiYarn-125M")
 

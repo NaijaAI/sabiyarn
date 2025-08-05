@@ -168,7 +168,8 @@ def run_all_tests():
                 dim=256, n_layers=2, n_heads=8, vocab_size=1000,
                 max_batch_size=2, max_seq_len=32, attention_type=AttentionType.MLA,
                 mla_config=mla_config, moe=True, n_routed_experts=8,
-                n_activated_experts=2, moe_inter_dim=512, n_shared_experts=1
+                n_activated_experts=2, moe_inter_dim=512, n_shared_experts=1,
+                score_function="sigmoid", bias_update_speed=0.001, moe_aux_loss_weight=0.001
             )
             model = SabiYarn(config)
             model.eval()

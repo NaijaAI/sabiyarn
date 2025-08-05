@@ -1,3 +1,4 @@
+# sequence wise loss adapted from https://gist.github.com/TeaPoly/b5e046d9efa93fa7e38880b4c7e5ec5f
 import dataclasses
 from typing import List, Tuple, TYPE_CHECKING
 
@@ -91,7 +92,10 @@ class Gate(nn.Module):
         self.n_groups = args.n_expert_groups
         self.topk_groups = args.n_limited_groups
         self.route_scale = args.route_scale
+        self.score_function = args.score_function
+        self.aux_loss_weight = args.moe_aux_loss_weight
         self.weight = nn.Parameter(torch.empty(args.n_routed_experts, args.dim))
+        self.n_routed_experts = args.n_routed_experts
         
         #  expert bias for load balancing
         self.expert_bias = nn.Parameter(torch.zeros(args.n_routed_experts))
@@ -114,14 +118,20 @@ class Gate(nn.Module):
         Returns:
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Routing weights, selected expert indices, and raw scores.
         """
-       
+        bsz, seq_len, dim = x.size()
+        x = x.view(-1, dim)
+
         scores = linear(x, self.weight)
-        scores = scores.sigmoid()
+        if self.score_function == "sigmoid":
+            scores = scores.sigmoid()
+        else:
+            scores = scores.softmax(dim=-1, dtype=torch.float32)
+
         original_scores = scores
         
         # Add expert bias for load balancing
         scores = scores + self.expert_bias
-        raw_scores = scores.clone()
+
         
         # Expert group routing (if using groups)
         if self.n_groups > 1:
@@ -133,10 +143,47 @@ class Gate(nn.Module):
         
         # Select top-k experts
         indices = torch.topk(scores, self.topk, dim=-1)[1]
+
+        # complementary sequence-wise auxiliary loss
+        if self.training and self.aux_loss_weight > 0.0:
+            scores_for_aux = original_scores
+            topk_idx_for_aux_loss = indices.view(bsz, -1)
+            scores_for_seq_aux = scores_for_aux.view(bsz, seq_len, -1)
+            ce = torch.zeros(bsz, self.n_routed_experts, device=x.device)
+            ce.scatter_add_(
+                1,
+                topk_idx_for_aux_loss,
+                torch.ones(bsz, seq_len * self.topk, device=x.device),
+            ).div_(seq_len * self.topk / self.n_routed_experts)
+            aux_loss = (ce * scores_for_seq_aux.mean(dim=1)).sum(
+                dim=1
+            ).mean() * self.aux_loss_weight
+        else:
+            aux_loss = None
+        
+        if self.training and self.expert_bias is not None:
+            with torch.no_grad():
+                counts = torch.bincount(indices.flatten(), minlength=self.n_routed_experts)
+                self.update_expert_bias(counts)
+            
         weights = original_scores.gather(1, indices)
+        if self.score_function == "sigmoid":
+            weights /= weights.sum(dim=-1, keepdim=True)
         weights *= self.route_scale
         
-        return weights.type_as(x), indices, raw_scores
+        return weights.type_as(x), indices, aux_loss
+    
+    def update_expert_bias(self, counts: torch.Tensor):
+        """
+        Update expert bias based on counts.
+        """
+        with torch.no_grad():
+            if world_size > 1 and dist.is_available() and dist.is_initialized():
+                dist.all_reduce(counts, dist.ReduceOp.SUM)
+            avg_count = counts.float().mean()
+            error = avg_count - counts.float()
+            self.expert_bias.add_(torch.sign(error) * self.bias_update_speed)
+        
 
 class Expert(nn.Module):
     """
@@ -174,43 +221,7 @@ class Expert(nn.Module):
 
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
-def compute_auxiliary_loss(gate_logits: torch.Tensor, expert_indices: torch.Tensor, 
-                          num_experts: int, aux_loss_weight: float = 0.01) -> torch.Tensor:
-    """
-    Compute sequence-wise auxiliary loss for expert load balancing.
-    
-    Args:
-        gate_logits: Raw gate logits (batch_size, seq_len, num_experts)
-        expert_indices: Selected expert indices (batch_size, seq_len, topk)
-        num_experts: Total number of experts
-        aux_loss_weight: Weight for auxiliary loss
-        
-    Returns:
-        Auxiliary loss tensor
-    """
-    batch_size, seq_len = gate_logits.shape[:2]
-    
-    # Compute expert probabilities from logits
-    expert_probs = F.softmax(gate_logits, dim=-1)  # (batch_size, seq_len, num_experts)
-    
-    # Sequence-wise expert usage frequency
-    # Sum probabilities across sequence dimension
-    seq_expert_freq = expert_probs.sum(dim=1)  # (batch_size, num_experts)
-    
-    # Target uniform distribution across experts
-    target_freq = seq_len / num_experts  # Each expert should get seq_len/num_experts tokens
-    
-    # Compute variance of expert usage (higher variance = poor load balancing)
-    expert_variance = torch.var(seq_expert_freq, dim=-1)  # (batch_size,)
-    
-    # Alternative: Use coefficient of variation for scale-invariant loss
-    expert_mean = torch.mean(seq_expert_freq, dim=-1)  # (batch_size,)
-    coefficient_of_variation = expert_variance / (expert_mean + 1e-8)
-    
-    # Return mean auxiliary loss across batch
-    aux_loss = coefficient_of_variation.mean() * aux_loss_weight
-    
-    return aux_loss
+
 
 class MoE(nn.Module):
     """
@@ -246,7 +257,7 @@ class MoE(nn.Module):
                                       for i in range(self.n_routed_experts)])
         self.shared_experts = MLP(args.dim, args.n_shared_experts * args.moe_inter_dim)
     
-    def forward(self, x: torch.Tensor, return_aux_loss: bool = False) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass for the MoE module.
 
@@ -259,8 +270,8 @@ class MoE(nn.Module):
                                   If return_aux_loss=True, returns (output, aux_loss).
         """
         shape = x.size()
+        weights, indices, aux_loss = self.gate(x)
         x_flat = x.view(-1, self.dim)
-        weights, indices, raw_scores = self.gate(x_flat)
         y = torch.zeros_like(x_flat)
         counts = torch.bincount(indices.flatten(), minlength=self.n_routed_experts).tolist()
         
@@ -271,6 +282,7 @@ class MoE(nn.Module):
             idx, top = torch.where(indices == i)
             y[idx] += expert(x_flat[idx]) * weights[idx, top, None]
         
+
         z = self.shared_experts(x_flat)
         
         # All-reduce only in distributed setup
@@ -280,15 +292,23 @@ class MoE(nn.Module):
             except RuntimeError as e:
                 # Fallback: if all_reduce fails, just use local results
                 print(f"Warning: MoE all_reduce failed, using local results: {e}")
-        
+        if self.training and aux_loss is not None:
+            y= AddAuxLoss.apply(y, aux_loss)
         output = (y + z).view(shape)
         
-        if return_aux_loss:
-            # Compute auxiliary loss for load balancing
-            # Reshape raw_scores to match original input shape
-            gate_logits = raw_scores.view(shape[0], -1, self.n_routed_experts)
-            expert_indices_reshaped = indices.view(shape[0], -1, indices.size(-1))
-            aux_loss = compute_auxiliary_loss(gate_logits, expert_indices_reshaped, self.n_routed_experts)
-            return output, aux_loss
-        
         return output
+    
+class AddAuxLoss(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, aux_loss):
+        assert aux_loss.numel() == 1, "Auxiliary loss must be a scalar"
+        ctx.dtype = aux_loss.dtype
+        ctx.required_aux_loss = aux_loss.requires_grad
+        return x
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        grad_loss = None
+        if ctx.required_aux_loss:
+            grad_loss =  torch.ones(1, dtype=ctx.dtype, device= grad_output.device)
+        return grad_output, grad_loss
