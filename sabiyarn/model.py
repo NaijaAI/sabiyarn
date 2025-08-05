@@ -786,6 +786,7 @@ class SabiYarn(nn.Module):
         else:
             return hidden_states, logits
 
+
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, use_multi_token=False):
         """
@@ -836,3 +837,6 @@ class SabiYarn(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)
 
         return idx
+
+
+

@@ -4,7 +4,7 @@ from time import time
 
 def create_causal_mask(tensor, original_mask, id_val=30, min_value=-1e-25):
     """
-    Generates a new causal attention mask based on the location of ID 30.
+    Generates a new causal attention mask based on the location of ID 30 (end_of_text_id).
 
     Args:
         mask: A torch tensor with shape (batch_size, seq_len, seq_len) representing
@@ -84,6 +84,7 @@ if __name__ == "__main__":
         # Choose random indices to replace with 30
         replace_indices = torch.randint(0, ids.shape[1], (3,))
         ids[i, replace_indices] = 30
+        # ids[i, replace_indices-1]=30
 
     # Generate the original causal mask
     original_mask = torch.tril(torch.ones(20, 20, dtype=torch.int))
