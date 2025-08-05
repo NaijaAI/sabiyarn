@@ -816,6 +816,7 @@ class SabiYarnTrainer:
                         raw_model.lm_head.weight,
                         targets,
                         shift=True,
+                        ignore_index=-100,
                         impl="torch_compile"
                     )
                 else:
@@ -835,6 +836,7 @@ class SabiYarnTrainer:
                     raw_model.lm_head.weight,
                     targets,
                     shift=True,
+                    ignore_index=-100,
                     impl="torch_compile"
                 )
             else:
