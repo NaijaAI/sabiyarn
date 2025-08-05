@@ -589,6 +589,7 @@ class SabiYarn(nn.Module):
             params.dim,
         )
 
+        self.layer_sharing_strategy = params.layer_sharing_strategy
         # Create layers with optional layer sharing 
         if params.layer_sharing:
             # Create only unique layers
