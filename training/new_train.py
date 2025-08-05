@@ -533,7 +533,7 @@ class SabiYarnTrainer:
     def setup_data(self):
         """Setup data loading."""
         LOG.info("Preparing dataset...")
-        prepare.run()
+        prepare.run(["Aletheia-ng/pretrain_test"],1)
         
         # Initialize tokenizer if available
         self.tokenizer = None

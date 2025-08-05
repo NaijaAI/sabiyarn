@@ -208,7 +208,7 @@ def prepare_data():
     os.environ["TRAIN_DATA_PATH"] = "/data/train.bin"
     os.environ["VAL_DATA_PATH"] = "/data/val.bin"
     
-    prepare.run()
+    prepare.run(["Aletheia-ng/pretrain_test"],1)
     
     # Validate the created data files
     import numpy as np
