@@ -12,7 +12,7 @@ from omegaconf import OmegaConf
 from transformers import AutoTokenizer
 from huggingface_hub import list_repo_files
 import json
-from .constant_tokens import end_of_text_token
+from training import constant_tokens
 import structlog
 from dotenv import load_dotenv
 load_dotenv()
@@ -42,7 +42,7 @@ PROCESS_ONE_FILE_AT_A_TIME = config.model.tokenizer.process_file_one_at_a_time  
 def get_tokenizer_and_eot(tokenizer_name):
     """Initializes and returns the tokenizer and end_of_text_token."""
     enc = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
-    eot_token = enc.eos_token_id if enc.eos_token_id is not None else end_of_text_token
+    eot_token = enc.eos_token_id if enc.eos_token_id is not None else constant_tokens.end_of_text_token
     return enc, eot_token
 
 def calculate_test_size(dataset_length):

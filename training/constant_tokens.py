@@ -1,7 +1,16 @@
 from transformers import AutoTokenizer
+from omegaconf import OmegaConf
+import os
+
 MASK=-100
-tokenizer = AutoTokenizer.from_pretrained("BeardedMonster/SabiYarn-125M")
-# tokenizer = AutoTokenizer.from_pretrained("Aletheia-ng/SabiYarn-125M")
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root =  os.path.dirname(current_dir)
+
+config_path = os.path.join(project_root, "config", "config.yaml")
+config = OmegaConf.load(config_path)
+
+tokenizer = AutoTokenizer.from_pretrained(config.model.tokenizer.name)
 
 lang_id_token = tokenizer.encode("<lang_ID>")[0]
 lang_id_label_token = tokenizer.encode("<lang_ID_label>")[0]
@@ -19,7 +28,7 @@ summary_token = tokenizer.encode("<summary>")[0]
 title_token = tokenizer.encode("<title>")[0]
 headline_token = tokenizer.encode("<headline>")[0]
 context_token = tokenizer.encode("<context>")[0]
-end_of_text_token = tokenizer.encode("|end_of_text|")[0]
+end_of_text_token =  tokenizer.encode("<|end_of_text|>")[0]
 translate_token = tokenizer.encode("<translate>")[0]
 lang_id_label_token2 = tokenizer.encode("<lang_id_label>")[0]
 ner_token2 = tokenizer.encode("<ner>")[0]
@@ -30,6 +39,7 @@ lang_id_label_token2 = tokenizer.encode('<lang_id>')[0]
 summarize_token2 = tokenizer.encode('<text>')[0]
 prompt_token = tokenizer.encode('<prompt>')[0]
 response_token = tokenizer.encode("<response>")[0]
+
 
 ######################################################################
 # Comment this section during real training
