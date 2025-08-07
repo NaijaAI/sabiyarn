@@ -35,11 +35,9 @@ num_proc = config.model.tokenizer.num_proc
 # best number might be different from num_proc above as it also depends on NW speed.
 # it is better than 1 usually though
 
-DATASETS = (
-    
-)
+DATASETS = config.data.datasets
 
-PROCESS_ONE_FILE_AT_A_TIME = True  #Should be True
+PROCESS_ONE_FILE_AT_A_TIME = config.model.tokenizer.process_file_one_at_a_time  #Should be True
 
 def get_tokenizer_and_eot(tokenizer_name):
     """Initializes and returns the tokenizer and end_of_text_token."""
@@ -108,7 +106,7 @@ def write_to_memmap(dset, filename, dtype, log_prefix=""):
     LOG.info(f"{log_prefix} write to bin file complete...")
 
 
-def run(datasets_list, num_proc_load_dataset):
+def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc):
     """
     Main function to process and tokenize datasets, saving to memory-mapped files.
     """
