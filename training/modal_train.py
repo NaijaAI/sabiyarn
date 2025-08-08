@@ -191,6 +191,7 @@ def train_sabiyarn(
 @app.function(
     image=image,
     volumes={"/data": volume},
+    timeout=86400,  # 24 hours
 )
 def prepare_data():
     """Prepare training data on Modal."""
