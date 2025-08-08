@@ -246,7 +246,8 @@ def main():
         use_moe=True,
         n_routed_experts=4,
         n_activated_experts=2,
-        use_layer_sharing=True,
+        layer_sharing=True,
+        layer_sharing_strategy="immediate",
         n_unique_layers=5,
         max_iters=10000,  # Shorter for testing
         wandb_run_name="small_moe_test"
