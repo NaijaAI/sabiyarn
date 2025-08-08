@@ -574,7 +574,7 @@ class SabiYarnTrainer:
             
             LOG.info(f"Model resumed from checkpoint: {self.model.get_model_size()}")
             
-        self.model.to(self.config.device, dtype=self.config.dtype)
+        self.model.to(device=torch.device(self.config.device), dtype=self.ptdtype)
         
     def create_model_args(self) -> ModelArgs:
         """Create ModelArgs based on training configuration."""
