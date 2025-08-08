@@ -195,7 +195,6 @@ class ModelArgs:
     use_j: bool = True
     tie_weights: bool = True
     attention_type: str = AttentionType.SELF_ATTENTION
-    layer_sharing: LayerSharingStrategy = LayerSharingStrategy.IMMEDIATE
     diff_attn_args: Optional[DiffAttnArgs] = None
     mla_config: Optional[MLAConfig] = None
     
@@ -216,8 +215,9 @@ class ModelArgs:
     # Weight initialization
     init_std: float = 0.006  # DeepSeek paper default
     
-    # Layer sharing (MobileLLM-style immediate block-wise repeat)
+    # Layer sharing
     layer_sharing: bool = False  # Enable layer sharing
+    layer_sharing_strategy: LayerSharingStrategy = LayerSharingStrategy.IMMEDIATE
     n_unique_layers: Optional[int] = None  # Number of unique layers (if None, same as n_layers)
     
     def __post_init__(self):

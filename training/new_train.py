@@ -101,7 +101,8 @@ class TrainingConfig:
     mtp_only_training: bool = True  # When True, only use MTP loss for training
     
     # Layer Sharing (MobileLLM-style)
-    use_layer_sharing: bool = True
+    layer_sharing_strategy: str = "immediate"
+    layer_sharing: bool = True
     n_unique_layers: Optional[int] = 10
     
     # Other model features
@@ -646,7 +647,7 @@ class SabiYarnTrainer:
             mtp_share_embeddings=self.config.mtp_share_embeddings,
             
             # Layer sharing
-            layer_sharing=self.config.use_layer_sharing,
+            layer_sharing=self.config.layer_sharing,
             n_unique_layers=self.config.n_unique_layers,
             
             # Other features
