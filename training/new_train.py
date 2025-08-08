@@ -44,7 +44,7 @@ from sabiyarn.differential_attention import DiffAttnArgs
 from cut_cross_entropy import linear_cross_entropy
 from training.utils import *
 from training.constant_tokens import MASK
-from training.training_attention_mask import create_causal_mask
+from training.training_attention_mask import create_causal_mask, create_causal_mask_optimized
 
 from transformers import AutoTokenizer
 from bitsandbytes import optim as bnb_optim
@@ -135,7 +135,7 @@ class TrainingConfig:
     
     # Custom masking
     use_custom_causal_mask: bool = True
-    mask_id_value: int = 30  # ID value for custom masking
+    mask_id_value: int = 30  # ID value for custom masking, this is for the end of text token id value
     
     # Data
     dataset: str = "Aletheia-ng/pretrain_test"
@@ -722,7 +722,7 @@ class SabiYarnTrainer:
         y = [torch.from_numpy((data[i + 1:i + 1 + self.config.max_seq_len]).astype(np.int64)) for i in ix]
         
         # Apply label processing
-        y = [mask_long_sequences(process_labels(sample.clone(), MASK), mask_value=MASK) for sample in y]
+        y = [process_labels_optimized(sample.clone(), MASK) for sample in y]
         
         x = torch.stack(x)
         y = torch.stack(y)
@@ -755,7 +755,7 @@ class SabiYarnTrainer:
         
         # Apply custom causal masking if enabled
         if self.config.use_custom_causal_mask:
-            mask = create_causal_mask(
+            mask = create_causal_mask_optimized(
                 tokens, 
                 mask, 
                 id_val=self.config.mask_id_value
@@ -994,6 +994,7 @@ class SabiYarnTrainer:
                     wandb.log(eval_metrics, step=self.iter_num)
                     
                 if losses["val"] < self.best_val_loss or self.config.always_save_checkpoint:
+         
                     self.best_val_loss = losses["val"]
                     if self.iter_num > 0:
                         self.save_checkpoint()
