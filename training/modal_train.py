@@ -67,7 +67,8 @@ def train_sabiyarn(
     mtp_only_training: bool = True,
     
     # Layer Sharing
-    use_layer_sharing: bool = True,
+    layer_sharing: bool = True,
+    layer_sharing_strategy: str = "immediate",
     n_unique_layers: int = 10,
     
     # Training configuration
@@ -136,7 +137,8 @@ def train_sabiyarn(
         mtp_only_training=mtp_only_training,
         
         # Layer Sharing
-        use_layer_sharing=use_layer_sharing,
+        layer_sharing=layer_sharing,
+        layer_sharing_strategy=layer_sharing_strategy,
         n_unique_layers=n_unique_layers,
         
         # Training Configuration
