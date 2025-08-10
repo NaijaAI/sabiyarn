@@ -36,7 +36,7 @@ volume = modal.Volume.from_name("sabiyarn-data", create_if_missing=True)
     timeout=86400,  # 24 hours
     image=image,
     volumes={"/data": volume},
-    secrets=[modal.Secret.from_name("wandb-secret")],  # Store W&B API key
+    secrets=[modal.Secret.from_name("wandb-secret"), modal.Secret.from_name("hf-secret")],  # Store W&B API key
     cpu=8,
     # memory=32768,  # 32GB RAM
 )
@@ -194,6 +194,7 @@ def train_sabiyarn(
     image=image,
     volumes={"/data": volume},
     timeout=86400,  # 24 hours
+    secrets=[modal.Secret.from_name("hf-secret")],
 )
 def prepare_data():
     """Prepare training data on Modal."""
