@@ -30,6 +30,7 @@ config = OmegaConf.load(config_path)
 
 READ_TOKEN = os.getenv("HF_API_KEY")
 num_proc = min(config.model.tokenizer.num_proc, os.cpu_count())
+DATASET_REVISION = os.getenv("HF_DATASET_REVISION")  # Optional pin to commit/tag for stable cache keys
 
 # number of workers in load_dataset() call
 # best number might be different from num_proc above as it also depends on NW speed.
@@ -132,13 +133,23 @@ def run(datasets_list, num_proc_load_dataset):
 
         if not PROCESS_ONE_FILE_AT_A_TIME:
             LOG.info(f"Downloading dataset '{dataset_name}'...")
-            loaded_dataset = load_dataset(
-                dataset_name,
+            load_kwargs = dict(
                 num_proc=num_proc_load_dataset,
                 trust_remote_code=True,
                 token=READ_TOKEN,
                 verification_mode="no_checks",
             )
+            if DATASET_REVISION:
+                load_kwargs["revision"] = DATASET_REVISION
+            try:
+                loaded_dataset = load_dataset(dataset_name, **load_kwargs)
+            except ValueError as e:
+                # Handle cache hash mismatch by forcing re-download
+                if "Couldn't find cache" in str(e):
+                    load_kwargs["download_mode"] = "force_redownload"
+                    loaded_dataset = load_dataset(dataset_name, **load_kwargs)
+                else:
+                    raise
             # By default only contains the 'train' split, so create a test split
             train_split = loaded_dataset["train"]
             dataset_length = len(train_split)
@@ -187,14 +198,24 @@ def run(datasets_list, num_proc_load_dataset):
                 LOG.info(f"Downloading and processing {file} from dataset '{dataset_name}'...")
                 
                 # IMPORTANT: Use dataset_name from the loop, not config["dataset"]
-                loaded_dataset_file = load_dataset(
-                    dataset_name,
+                load_kwargs = dict(
                     data_files=[file],
                     num_proc=num_proc_load_dataset,
                     trust_remote_code=True, # Added this for consistency with first branch
                     token=READ_TOKEN, # Added this for consistency
                     verification_mode="no_checks",
                 )
+                if DATASET_REVISION:
+                    load_kwargs["revision"] = DATASET_REVISION
+                try:
+                    loaded_dataset_file = load_dataset(dataset_name, **load_kwargs)
+                except ValueError as e:
+                    # Handle cache hash mismatch by forcing re-download
+                    if "Couldn't find cache" in str(e):
+                        load_kwargs["download_mode"] = "force_redownload"
+                        loaded_dataset_file = load_dataset(dataset_name, **load_kwargs)
+                    else:
+                        raise
 
                 train_split_file = loaded_dataset_file["train"]
                 dataset_length = len(train_split_file)
