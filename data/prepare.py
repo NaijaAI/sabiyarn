@@ -6,11 +6,11 @@ from tqdm import tqdm
 import numpy as np
 
 # import tiktoken
-from datasets import load_dataset
+from datasets import load_dataset, DownloadConfig
 from dotenv import load_dotenv
 from omegaconf import OmegaConf
 from transformers import AutoTokenizer
-from huggingface_hub import list_repo_files
+from huggingface_hub import list_repo_files, hf_hub_url
 import json
 from .constant_tokens import end_of_text_token
 import structlog
@@ -146,7 +146,7 @@ def run(datasets_list, num_proc_load_dataset):
             except ValueError as e:
                 # Handle cache hash mismatch by forcing re-download
                 if "Couldn't find cache" in str(e):
-                    load_kwargs["download_mode"] = "force_redownload"
+                    load_kwargs["download_config"] = DownloadConfig(force_download=True, resume_download=False, use_etag=False)
                     loaded_dataset = load_dataset(dataset_name, **load_kwargs)
                 else:
                     raise
@@ -197,25 +197,18 @@ def run(datasets_list, num_proc_load_dataset):
             for file in files_to_process:
                 LOG.info(f"Downloading and processing {file} from dataset '{dataset_name}'...")
                 
-                # IMPORTANT: Use dataset_name from the loop, not config["dataset"]
+                # Build a direct URL to the parquet file on the Hub to avoid
+                # the dataset script cache fallback logic.
+                revision = DATASET_REVISION if DATASET_REVISION else "main"
+                file_url = hf_hub_url(repo_id=dataset_name, filename=file, repo_type="dataset", revision=revision)
+
                 load_kwargs = dict(
-                    data_files=[file],
+                    data_files={"train": file_url},
                     num_proc=num_proc_load_dataset,
-                    trust_remote_code=True, # Added this for consistency with first branch
-                    token=READ_TOKEN, # Added this for consistency
-                    verification_mode="no_checks",
+                    token=READ_TOKEN,
                 )
-                if DATASET_REVISION:
-                    load_kwargs["revision"] = DATASET_REVISION
-                try:
-                    loaded_dataset_file = load_dataset(dataset_name, **load_kwargs)
-                except ValueError as e:
-                    # Handle cache hash mismatch by forcing re-download
-                    if "Couldn't find cache" in str(e):
-                        load_kwargs["download_mode"] = "force_redownload"
-                        loaded_dataset_file = load_dataset(dataset_name, **load_kwargs)
-                    else:
-                        raise
+                # Use the parquet builder directly to read the single file
+                loaded_dataset_file = load_dataset("parquet", **load_kwargs)
 
                 train_split_file = loaded_dataset_file["train"]
                 dataset_length = len(train_split_file)
