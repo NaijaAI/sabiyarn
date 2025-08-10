@@ -84,6 +84,8 @@ def train_sabiyarn(
     out_dir: str = "/data/checkpoints",
     eval_interval: int = 2000,
     log_interval: int = 100,
+
+    init_from: str = "scratch",
     
     # W&B configuration
     wandb_project: str = "sabiyarn-modal-training",
@@ -170,6 +172,8 @@ def train_sabiyarn(
         log_moe_metrics=use_moe,
         monitor_interval=50,
         
+        init_from=init_from,
+
         # System
         device="cuda",
         dtype=dtype,
@@ -195,6 +199,7 @@ def train_sabiyarn(
     volumes={"/data": volume},
     timeout=86400,  # 24 hours
     secrets=[modal.Secret.from_name("hf-secret")],
+    cpu=8
 )
 def prepare_data():
     """Prepare training data on Modal."""
@@ -253,7 +258,8 @@ def main():
         layer_sharing_strategy="immediate",
         n_unique_layers=5,
         max_iters=10000,  # Shorter for testing
-        wandb_run_name="small_moe_test"
+        wandb_run_name="small_moe_test",
+        init_from="scratch",
     )
     
     if result:
