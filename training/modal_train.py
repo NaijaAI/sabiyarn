@@ -213,6 +213,15 @@ def prepare_data():
     
     print("📁 Preparing training data...")
     
+    # Persist Hugging Face caches on the mounted Modal volume for stability
+    cache_root = "/data/hf_cache"
+    os.environ.setdefault("HF_HOME", cache_root)
+    os.environ.setdefault("HF_DATASETS_CACHE", os.path.join(cache_root, "datasets"))
+    os.environ.setdefault("TRANSFORMERS_CACHE", os.path.join(cache_root, "transformers"))
+    os.makedirs(os.environ["HF_HOME"], exist_ok=True)
+    os.makedirs(os.environ["HF_DATASETS_CACHE"], exist_ok=True)
+    os.makedirs(os.environ["TRANSFORMERS_CACHE"], exist_ok=True)
+
     # Set data paths to persistent volume
     os.environ["TRAIN_DATA_PATH"] = "/data/train.bin"
     os.environ["VAL_DATA_PATH"] = "/data/val.bin"
