@@ -242,7 +242,7 @@ def main():
 
     result = train_sabiyarn.remote(
         attention_type="MLA",
-        dim=512,
+        dim=256,
         n_layers=10,
         n_heads=8,
         n_kv_heads=4,
