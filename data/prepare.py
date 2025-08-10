@@ -10,7 +10,8 @@ from datasets import load_dataset, DownloadConfig
 from dotenv import load_dotenv
 from omegaconf import OmegaConf
 from transformers import AutoTokenizer
-from huggingface_hub import list_repo_files, hf_hub_url
+import re
+from huggingface_hub import list_repo_files, hf_hub_download
 import json
 from .constant_tokens import end_of_text_token
 import structlog
@@ -195,20 +196,25 @@ def run(datasets_list, num_proc_load_dataset):
                 continue
 
             for file in files_to_process:
-                LOG.info(f"Downloading and processing {file} from dataset '{dataset_name}'...")
-                
-                # Build a direct URL to the parquet file on the Hub to avoid
-                # the dataset script cache fallback logic.
-                revision = DATASET_REVISION if DATASET_REVISION else "main"
-                file_url = hf_hub_url(repo_id=dataset_name, filename=file, repo_type="dataset", revision=revision)
+                # Sanitize potentially odd filenames (remove control chars)
+                sanitized_file = re.sub(r"[\x00-\x1f\x7f]", "", file).strip()
+                LOG.info(f"Downloading and processing {sanitized_file} from dataset '{dataset_name}'...")
 
-                load_kwargs = dict(
-                    data_files={"train": file_url},
-                    num_proc=num_proc_load_dataset,
+                # Download the parquet file locally via HF hub to avoid URL quoting issues
+                revision = DATASET_REVISION if DATASET_REVISION else "main"
+                local_path = hf_hub_download(
+                    repo_id=dataset_name,
+                    filename=sanitized_file,
+                    repo_type="dataset",
+                    revision=revision,
                     token=READ_TOKEN,
                 )
-                # Use the parquet builder directly to read the single file
-                loaded_dataset_file = load_dataset("parquet", **load_kwargs)
+
+                # Load from the local parquet path
+                loaded_dataset_file = load_dataset(
+                    "parquet",
+                    data_files={"train": local_path},
+                )
 
                 train_split_file = loaded_dataset_file["train"]
                 dataset_length = len(train_split_file)
