@@ -5,6 +5,9 @@ on:
     branches: sam_mla
   pull_request:
     branches: main
+env:
+  HF_TOKEN: ${{ secrets.HF_API_KEY }}
+  HF_DATASET_REVISION: "main"
 
 jobs:
   test:
