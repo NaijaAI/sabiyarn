@@ -29,7 +29,7 @@ config_path = os.path.join(project_root, "config", "config.yaml")
 config = OmegaConf.load(config_path)
 
 READ_TOKEN = os.getenv("HF_API_KEY")
-num_proc = config.model.tokenizer.num_proc
+num_proc = min(config.model.tokenizer.num_proc, os.cpu_count())
 
 # number of workers in load_dataset() call
 # best number might be different from num_proc above as it also depends on NW speed.
