@@ -68,7 +68,7 @@ class TrainingConfig:
     n_layers: int = 20
     n_heads: int = 16
     n_kv_heads: Optional[int] = 8
-    vocab_size: int = 52000
+    vocab_size: int = 64000
     max_seq_len: int = 1024
     max_batch_size: int = 32
     
