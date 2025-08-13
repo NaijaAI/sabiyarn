@@ -756,8 +756,8 @@ class SabiYarnTrainer:
         mask = mask.view(1, 1, seq_len, seq_len).repeat(batch_size, 1, 1, 1)
         
         # Apply custom causal masking if enabled
-        if self.config.use_custom_causal_mask_optimized:
-            mask = create_causal_mask(
+        if self.config.use_custom_causal_mask:
+            mask = create_causal_mask_optimized(
                 tokens, 
                 mask, 
                 id_val=self.config.mask_id_value
