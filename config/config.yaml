@@ -26,13 +26,20 @@ wandb:
 
 # data
 data: 
-  dataset : "Aletheia-ng/wiki-yo"
+  dataset : 
+    - "Aletheia-ng/pretrain_data"
+    - "Aletheia-ng/pretrain_data2"
+    - "Aletheia-ng/pretrain_data3"
+    - "Aletheia-ng/pretrain_data4"
+    - "Aletheia-ng/pretrain_data5"
+    - "Aletheia-ng/low_resource_languages_pretrain"
+    - "Aletheia-ng/african_languages3"
   train_data_path : "data/train.bin"
   eval_data_path : "data/val.bin"
 
 # model
 model:
-  vocab_size : 52000
+  vocab_size : 64000
   n_layers : 24
   n_heads : 8
   dropout : 0.0  # for pretraining 0 is good, for finetuning try 0.1+
@@ -59,9 +66,9 @@ model:
   tie_word_embeddings: false
   attention_dropout: 0.0
   tokenizer:
-    name: "Aletheia-ng/SabiYarn-125M"
+    name: "Aletheia-ng/SabiYarn_test"
     num_proc: 64
-
+    process_one_file_at_a_time: True
 # adamw optimizer
 optimizer:
   name : "adam"

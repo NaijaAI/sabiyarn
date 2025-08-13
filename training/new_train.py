@@ -44,7 +44,7 @@ from sabiyarn.differential_attention import DiffAttnArgs
 from cut_cross_entropy import linear_cross_entropy
 from training.utils import *
 from training.constant_tokens import MASK
-from training.training_attention_mask import create_causal_mask
+from training.training_attention_mask import create_causal_mask, create_causal_mask_optimized
 
 from transformers import AutoTokenizer
 from bitsandbytes import optim as bnb_optim
@@ -68,7 +68,7 @@ class TrainingConfig:
     n_layers: int = 20
     n_heads: int = 16
     n_kv_heads: Optional[int] = 8
-    vocab_size: int = 52000
+    vocab_size: int = 64000
     max_seq_len: int = 1024
     max_batch_size: int = 32
     
@@ -136,7 +136,7 @@ class TrainingConfig:
     
     # Custom masking
     use_custom_causal_mask: bool = True
-    mask_id_value: int = 30  # ID value for custom masking
+    mask_id_value: int = 1  # ID value for custom masking, this is for the end of text token id value from our tokenizer which is 1 for llama 
     
     # Data
     dataset: str = "Aletheia-ng/pretrain_test"
@@ -649,6 +649,7 @@ class SabiYarnTrainer:
             # Layer sharing
             layer_sharing=self.config.layer_sharing,
             n_unique_layers=self.config.n_unique_layers,
+            layer_sharing_strategy=self.config.layer_sharing_strategy,
             
             # Other features
             logic_network=self.config.use_logic_network,
@@ -723,7 +724,7 @@ class SabiYarnTrainer:
         y = [torch.from_numpy((data[i + 1:i + 1 + self.config.max_seq_len]).astype(np.int64)) for i in ix]
         
         # Apply label processing
-        y = [mask_long_sequences(process_labels(sample.clone(), MASK), mask_value=MASK) for sample in y]
+        y = [process_labels_optimized(sample.clone(), MASK) for sample in y]
         
         x = torch.stack(x)
         y = torch.stack(y)
@@ -755,7 +756,7 @@ class SabiYarnTrainer:
         mask = mask.view(1, 1, seq_len, seq_len).repeat(batch_size, 1, 1, 1)
         
         # Apply custom causal masking if enabled
-        if self.config.use_custom_causal_mask:
+        if self.config.use_custom_causal_mask_optimized:
             mask = create_causal_mask(
                 tokens, 
                 mask, 

@@ -13,7 +13,7 @@ from transformers import AutoTokenizer
 import re
 from huggingface_hub import list_repo_files, hf_hub_download
 import json
-from .constant_tokens import end_of_text_token
+from training import constant_tokens
 import structlog
 from dotenv import load_dotenv
 load_dotenv()
@@ -37,16 +37,14 @@ DATASET_REVISION = os.getenv("HF_DATASET_REVISION")  # Optional pin to commit/ta
 # best number might be different from num_proc above as it also depends on NW speed.
 # it is better than 1 usually though
 
-DATASETS = (
-    
-)
+DATASETS = config.data.dataset
 
-PROCESS_ONE_FILE_AT_A_TIME = True  #Should be True
+PROCESS_ONE_FILE_AT_A_TIME = config.model.tokenizer.process_one_file_at_a_time #Should be True
 
 def get_tokenizer_and_eot(tokenizer_name):
     """Initializes and returns the tokenizer and end_of_text_token."""
     enc = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
-    eot_token = enc.eos_token_id if enc.eos_token_id is not None else end_of_text_token
+    eot_token = enc.eos_token_id if enc.eos_token_id is not None else constant_tokens.end_of_text_token
     return enc, eot_token
 
 def calculate_test_size(dataset_length):
@@ -110,7 +108,7 @@ def write_to_memmap(dset, filename, dtype, log_prefix=""):
     LOG.info(f"{log_prefix} write to bin file complete...")
 
 
-def run(datasets_list, num_proc_load_dataset):
+def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc):
     """
     Main function to process and tokenize datasets, saving to memory-mapped files.
     """
