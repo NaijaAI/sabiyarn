@@ -590,6 +590,12 @@ class SabiYarn(nn.Module):
         )
 
         self.layer_sharing_strategy = params.layer_sharing_strategy
+        # Be resilient to configs passing strings instead of the enum
+        if isinstance(self.layer_sharing_strategy, str):
+            try:
+                self.layer_sharing_strategy = LayerSharingStrategy[self.layer_sharing_strategy.upper()]
+            except Exception:
+                self.layer_sharing_strategy = LayerSharingStrategy.IMMEDIATE
         # Create layers with optional layer sharing 
         if params.layer_sharing:
             # Create only unique layers
@@ -612,6 +618,13 @@ class SabiYarn(nn.Module):
             elif self.layer_sharing_strategy == LayerSharingStrategy.IMMEDIATE:
                 # Create execution order: immediate block-wise sharing
                 # This will repeat each group of unique layers in sequence
+                self.layer_execution_order = [
+                    unique_id
+                    for unique_id in range(self.n_unique_layers)
+                    for _ in range(self.repeat_factor)
+                ]
+            else:
+                # Fallback to IMMEDIATE if an unknown strategy is provided
                 self.layer_execution_order = [
                     unique_id
                     for unique_id in range(self.n_unique_layers)
