@@ -86,6 +86,7 @@ def train_sabiyarn(
     log_interval: int = 100,
 
     init_from: str = "scratch",
+    use_cut_cross_entropy=False,
     
     # W&B configuration
     wandb_project: str = "sabiyarn-modal-training",
@@ -143,6 +144,9 @@ def train_sabiyarn(
         layer_sharing_strategy=layer_sharing_strategy,
         n_unique_layers=n_unique_layers,
         
+        #CCE
+        use_cut_cross_entropy=use_cut_cross_entropy,
+        
         # Training Configuration
         train_batch_size=train_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
@@ -173,11 +177,13 @@ def train_sabiyarn(
         monitor_interval=50,
         
         init_from=init_from,
-
+        
+        warmup_iters=300,
+        lr_decay_iters=1000,
         # System
         device="cuda",
         dtype=dtype,
-        compile_model=False,  # Disable for debugging
+        compile_model=True,  # Disable for debugging
     )
     
     print("Starting SabiYarn training on Modal GPU...")
@@ -263,10 +269,15 @@ def main():
         use_moe=True,
         n_routed_experts=4,
         n_activated_experts=2,
+        use_multi_token_prediction=False,
+        compile_model=True,
+        use_cut_cross_entropy=False,
         layer_sharing=True,
         layer_sharing_strategy="immediate",
         n_unique_layers=5,
         max_iters=10000,  # Shorter for testing
+        warmup_iters=300,
+        lr_decay_iters=1000,
         wandb_run_name="small_moe_test",
         init_from="scratch",
     )
