@@ -78,6 +78,8 @@ def train_sabiyarn(
     max_iters: int = 60000,
     weight_decay: float = 1e-1,
     grad_clip: float = 1.0,
+    warmup_iters: int = 300,
+    lr_decay_iters: int = 1000,
     
     # Data and checkpointing
     dataset: str = "Aletheia-ng/pretrain_test",
@@ -153,6 +155,8 @@ def train_sabiyarn(
         learning_rate=learning_rate,
         max_iters=max_iters,
         weight_decay=weight_decay,
+        warmup_iters=warmup_iters,
+        lr_decay_iters=lr_decay_iters,
         grad_clip=grad_clip,
         
         # Data paths (Modal persistent volume)
@@ -178,8 +182,7 @@ def train_sabiyarn(
         
         init_from=init_from,
         
-        warmup_iters=300,
-        lr_decay_iters=1000,
+
         # System
         device="cuda",
         dtype=dtype,
