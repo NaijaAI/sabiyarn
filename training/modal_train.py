@@ -284,7 +284,7 @@ def main():
         warmup_iters=300,
         lr_decay_iters=1000,
         wandb_run_name="small_standard_test",
-        init_from="scratch",
+        init_from="resume",
    
     )
     
