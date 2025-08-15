@@ -42,7 +42,7 @@ volume = modal.Volume.from_name("sabiyarn-data", create_if_missing=True)
 )
 def train_sabiyarn(
     # Model configuration
-    attention_type: str = "MLA",
+    attention_type: str = "self_attention",
     dim: int = 2048,
     n_layers: int = 20,
     n_heads: int = 16,
@@ -52,7 +52,7 @@ def train_sabiyarn(
     max_batch_size: int = 32,
     
     # MoE configuration
-    use_moe: bool = True,
+    use_moe: bool = False,
     n_routed_experts: int = 16,
     n_activated_experts: int = 8,
     moe_inter_dim: int = 2048,
@@ -72,7 +72,7 @@ def train_sabiyarn(
     n_unique_layers: int = 10,
     
     # Training configuration
-    train_batch_size: int = 8,
+    train_batch_size: int = 16,
     gradient_accumulation_steps: int = 5,
     learning_rate: float = 3e-4,
     max_iters: int = 60000,
@@ -166,6 +166,7 @@ def train_sabiyarn(
         out_dir=out_dir,
         eval_interval=eval_interval,
         log_interval=log_interval,
+        run_dir=run_dir,
         
         # W&B Configuration
         wandb_log=True,
@@ -264,12 +265,12 @@ def main():
     prepare_data.remote()
 
     result = train_sabiyarn.remote(
-        attention_type="MLA",
+        attention_type="self_attention",
         dim=256,
         n_layers=10,
         n_heads=8,
         n_kv_heads=4,
-        use_moe=True,
+        use_moe=False,
         n_routed_experts=4,
         n_activated_experts=2,
         use_multi_token_prediction=False,
@@ -281,8 +282,9 @@ def main():
         max_iters=10000,  # Shorter for testing
         warmup_iters=300,
         lr_decay_iters=1000,
-        wandb_run_name="small_moe_test",
+        wandb_run_name="small_standard_test",
         init_from="scratch",
+   
     )
     
     if result:

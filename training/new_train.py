@@ -12,6 +12,9 @@ import sys
 import time
 import math
 from datetime import datetime
+import json
+import random
+import string
 project_root = os.path.join(os.path.dirname(__file__), '..')
 sys.path.insert(0, project_root)
 
@@ -144,7 +147,9 @@ class TrainingConfig:
     eval_data_path: str = "./val.bin"
     
     # Logging and checkpointing
-    out_dir: str = "out"
+    out_dir: str = "out"  # Base directory that will contain per-run subfolders
+    run_dir: Optional[str] = None  # Full path to the current run directory (auto-created if None)
+    resume_run_dir: Optional[str] = None  # When resuming, explicitly set the run folder
     eval_interval: int = 2000
     log_interval: int = 100
     eval_iters: int = 200
@@ -184,6 +189,7 @@ class SabiYarnTrainer:
         self.config = config
         self.setup_environment()
         self.setup_distributed()
+        self.setup_output_dirs()
         self.setup_logging()
         self.setup_data()
         self.setup_model()
@@ -270,7 +276,8 @@ class SabiYarnTrainer:
     def setup_logging(self):
         """Setup output directory and wandb logging."""
         if self.master_process:
-            os.makedirs(self.config.out_dir, exist_ok=True)
+            # Ensure run directory exists
+            os.makedirs(self.run_dir, exist_ok=True)
             
             if self.config.wandb_log:
                 # Check W&B authentication
@@ -292,6 +299,7 @@ class SabiYarnTrainer:
                     "dataset_name": self.config.dataset,
                     "hardware": self._get_hardware_info(),
                     "git_commit": self._get_git_commit(),
+                    "run_dir": self.run_dir,
                 })
                 
                 wandb.init(
@@ -562,7 +570,9 @@ class SabiYarnTrainer:
             
         elif self.config.init_from == "resume":
             # Load from checkpoint
-            ckpt_path = os.path.join(self.config.out_dir, "ckpt.pt")
+            # Prefer an explicit resume_run_dir, else use the trainer's run_dir
+            resume_dir = self.config.resume_run_dir or self.run_dir
+            ckpt_path = os.path.join(resume_dir, "ckpt.pt")
             checkpoint = torch.load(ckpt_path, map_location=self.config.device)
             
             model_args = checkpoint["model_args"]
@@ -925,10 +935,20 @@ class SabiYarnTrainer:
             "config": self.config.__dict__,
         }
         
-        # Save main checkpoint
-        ckpt_path = os.path.join(self.config.out_dir, "ckpt.pt")
-        torch.save(checkpoint, ckpt_path)
-        LOG.info(f"Checkpoint saved to {ckpt_path}")
+        # Save in the run directory
+        os.makedirs(self.run_dir, exist_ok=True)
+        # Update a rolling 'ckpt.pt' and also an iter-stamped file for history
+        ckpt_latest = os.path.join(self.run_dir, "ckpt.pt")
+        ckpt_iter = os.path.join(self.run_dir, f"ckpt_{self.iter_num:07d}.pt")
+        torch.save(checkpoint, ckpt_latest)
+        torch.save(checkpoint, ckpt_iter)
+        # Update a simple pointer file in base out_dir for discovery
+        try:
+            with open(os.path.join(self.config.out_dir, "LATEST_RUN.txt"), "w") as fp:
+                fp.write(self.run_dir)
+        except Exception:
+            pass
+        LOG.info(f"Checkpoint saved to {ckpt_latest} and {ckpt_iter}")
         
         # Save MTP modules separately if available
         if hasattr(raw_model, 'multi_token_predictor') and raw_model.multi_token_predictor is not None:
@@ -940,7 +960,7 @@ class SabiYarnTrainer:
                 "config": self.config.__dict__,
             }
             
-            mtp_ckpt_path = os.path.join(self.config.out_dir, "mtp_ckpt.pt")
+            mtp_ckpt_path = os.path.join(self.run_dir, "mtp_ckpt.pt")
             torch.save(mtp_checkpoint, mtp_ckpt_path)
             LOG.info(f"MTP module checkpoint saved to {mtp_ckpt_path}")
             
@@ -958,9 +978,67 @@ class SabiYarnTrainer:
                 mtp_components['projection'] = mtp_module.projection.state_dict()
                 
             if mtp_components:
-                mtp_components_path = os.path.join(self.config.out_dir, "mtp_components.pt")
+                mtp_components_path = os.path.join(self.run_dir, "mtp_components.pt")
                 torch.save(mtp_components, mtp_components_path)
                 LOG.info(f"MTP components saved to {mtp_components_path}")
+
+    def setup_output_dirs(self):
+        """Create and register a unique run directory under out_dir and write metadata/pointers.
+
+        Naming: <YYYYmmdd_HHMMSS>_<attn>_<dim>d_<layers>L_<heads>H_<moe|dense>_<suffix>
+        """
+        # Ensure base exists
+        os.makedirs(self.config.out_dir, exist_ok=True)
+
+        if self.config.init_from == "resume":
+            # If an explicit resume dir is given, use it; else attempt to detect latest
+            if self.config.resume_run_dir:
+                self.run_dir = self.config.resume_run_dir
+            elif self.config.run_dir:
+                self.run_dir = self.config.run_dir
+            else:
+                # Try pointer file first
+                pointer = os.path.join(self.config.out_dir, "LATEST_RUN.txt")
+                run_dir = None
+                if os.path.exists(pointer):
+                    try:
+                        with open(pointer, "r") as fp:
+                            candidate = fp.read().strip()
+                            if candidate and os.path.isdir(candidate):
+                                run_dir = candidate
+                    except Exception:
+                        run_dir = None
+                if run_dir is None:
+                    # Pick most recent directory under out_dir
+                    subdirs = [d.path for d in os.scandir(self.config.out_dir) if d.is_dir()]
+                    if not subdirs:
+                        raise FileNotFoundError(f"No run directories found in {self.config.out_dir} to resume from")
+                    run_dir = max(subdirs, key=lambda p: os.path.getmtime(p))
+                self.run_dir = run_dir
+        else:
+            if self.config.run_dir:
+                self.run_dir = self.config.run_dir
+            else:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                attn = self.config.attention_type
+                moe_tag = "moe" if self.config.use_moe else "dense"
+                suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+                dir_name = f"{timestamp}_{attn}_{self.config.dim}d_{self.config.n_layers}L_{self.config.n_heads}H_{moe_tag}_{suffix}"
+                self.run_dir = os.path.join(self.config.out_dir, dir_name)
+            os.makedirs(self.run_dir, exist_ok=True)
+            # Write metadata for this run
+            metadata = {
+                "created_at": datetime.now().isoformat(),
+                "git_commit": self._get_git_commit(),
+                "config": self.config.__dict__,
+            }
+            try:
+                with open(os.path.join(self.run_dir, "metadata.json"), "w") as fp:
+                    json.dump(metadata, fp, indent=2)
+                with open(os.path.join(self.config.out_dir, "LATEST_RUN.txt"), "w") as fp:
+                    fp.write(self.run_dir)
+            except Exception:
+                pass
         
     def train(self):
         """Main training loop."""
