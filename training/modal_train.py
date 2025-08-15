@@ -86,6 +86,7 @@ def train_sabiyarn(
     out_dir: str = "/data/checkpoints",
     eval_interval: int = 2000,
     log_interval: int = 100,
+    run_dir: str = "/data/checkpoints/",
 
     init_from: str = "scratch",
     use_cut_cross_entropy=False,
