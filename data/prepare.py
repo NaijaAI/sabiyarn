@@ -112,6 +112,22 @@ def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc):
     """
     Main function to process and tokenize datasets, saving to memory-mapped files.
     """
+    # Resolve output paths: prefer env vars set by the runtime, else config defaults
+    env_train_path = os.getenv("TRAIN_DATA_PATH")
+    env_val_path = os.getenv("VAL_DATA_PATH")
+    default_train_path = (
+        config.data.train_data_path if hasattr(config, "data") and hasattr(config.data, "train_data_path")
+        else getattr(config, "train_data_path", "data/train.bin")
+    )
+    default_val_path = (
+        config.data.eval_data_path if hasattr(config, "data") and hasattr(config.data, "eval_data_path")
+        else getattr(config, "eval_data_path", "data/val.bin")
+    )
+    TRAIN_BIN_PATH = env_train_path or default_train_path
+    VAL_BIN_PATH = env_val_path or default_val_path
+    # Ensure directories exist
+    os.makedirs(os.path.dirname(TRAIN_BIN_PATH), exist_ok=True)
+    os.makedirs(os.path.dirname(VAL_BIN_PATH), exist_ok=True)
     files_processed = {}
     if os.path.exists("data_struct.json"):
         with open("data_struct.json", "r") as t:
@@ -174,7 +190,7 @@ def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc):
 
             LOG.info("Concatenating and binarizing splits...")
             for split, dset in tokenized_dataset.items():
-                filename = config.train_data_path if split.lower() == "train" else config.eval_data_path
+                filename = TRAIN_BIN_PATH if split.lower() == "train" else VAL_BIN_PATH
                 write_to_memmap(dset, filename, np.uint16, log_prefix=f"[{dataset_name} - {split}]")
             
             # For this mode, consider the whole dataset as processed once done
@@ -238,7 +254,7 @@ def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc):
 
                 LOG.info("Concatenating and binarizing splits...")
                 for split, dset in tokenized_dataset_file.items():
-                    filename = config.data.train_data_path if split.lower() == "train" else config.data.eval_data_path
+                    filename = TRAIN_BIN_PATH if split.lower() == "train" else VAL_BIN_PATH
                     write_to_memmap(dset, filename, np.uint16, log_prefix=f"[{file} - {split}]")
 
                 # Update processed files immediately after a file is successfully processed
