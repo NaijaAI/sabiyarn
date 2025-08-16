@@ -212,6 +212,7 @@ def train_sabiyarn(
     secrets=[modal.Secret.from_name("hf-secret")],
     cpu=8
 )
+
 def prepare_data():
     """Prepare training data on Modal."""
     import os
