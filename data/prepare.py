@@ -128,12 +128,22 @@ def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc):
     # Ensure directories exist
     os.makedirs(os.path.dirname(TRAIN_BIN_PATH), exist_ok=True)
     os.makedirs(os.path.dirname(VAL_BIN_PATH), exist_ok=True)
+    # Persist processed-files ledger on a stable path so repeated runs don't reprocess.
+    # Prefer PREP_STATE_PATH env; else default to the directory of TRAIN_BIN_PATH (typically under /data on Modal).
+    state_path_env = os.getenv("PREP_STATE_PATH")
+    default_state_dir = os.path.dirname(TRAIN_BIN_PATH) if TRAIN_BIN_PATH else "."
+    STATE_PATH = state_path_env or os.path.join(default_state_dir, "data_struct.json")
+
     files_processed = {}
-    if os.path.exists("data_struct.json"):
-        with open("data_struct.json", "r") as t:
-            files_processed = json.load(t)
+    if os.path.exists(STATE_PATH):
+        try:
+            with open(STATE_PATH, "r") as t:
+                files_processed = json.load(t)
+        except Exception:
+            LOG.warning(f"Failed to read state file at {STATE_PATH}; starting fresh...")
+            files_processed = {}
     else:
-        LOG.info("The data_struct file does not exist. Starting fresh...")
+        LOG.info(f"State file does not exist at {STATE_PATH}. Starting fresh...")
 
     tokenizer, end_of_text_token = get_tokenizer_and_eot(config.model.tokenizer.name)
 
@@ -260,8 +270,11 @@ def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc):
                 # Update processed files immediately after a file is successfully processed
                 current_dataset_processed_files.append(file)
                 files_processed[dataset_name] = current_dataset_processed_files # Update the main dict
-                with open("data_struct.json", "w") as f:
-                    json.dump(files_processed, f, indent=4) # Save progress
+                try:
+                    with open(STATE_PATH, "w") as f:
+                        json.dump(files_processed, f, indent=4) # Save progress
+                except Exception as e:
+                    LOG.warning(f"Failed to write state file {STATE_PATH}: {e}")
                 LOG.info(f"Successfully processed and saved progress for {file}.")
 
         # After processing all files/the entire dataset, update the main files_processed dictionary
@@ -270,9 +283,12 @@ def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc):
         # For the `PROCESS_ONE_FILE_AT_A_TIME = False` case, we save after each dataset too
         # To avoid data loss if crash between datasets.
         if not PROCESS_ONE_FILE_AT_A_TIME:
-             with open("data_struct.json", "w") as f:
-                json.dump(files_processed, f, indent=4)
-             LOG.info(f"Successfully processed and saved progress for entire dataset '{dataset_name}'.")
+            try:
+                with open(STATE_PATH, "w") as f:
+                    json.dump(files_processed, f, indent=4)
+                LOG.info(f"Successfully processed and saved progress for entire dataset '{dataset_name}'.")
+            except Exception as e:
+                LOG.warning(f"Failed to write state file {STATE_PATH}: {e}")
 
 if __name__ == "__main__":
     run()

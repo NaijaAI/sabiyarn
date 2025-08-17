@@ -234,11 +234,22 @@ def prepare_data():
     os.makedirs(os.environ["HF_DATASETS_CACHE"], exist_ok=True)
     os.makedirs(os.environ["TRANSFORMERS_CACHE"], exist_ok=True)
 
-    # Set data paths to persistent volume
+    # Set data paths to persistent volume and persist state under /data
     os.environ["TRAIN_DATA_PATH"] = "/data/train.bin"
     os.environ["VAL_DATA_PATH"] = "/data/val.bin"
-    
-    prepare.run(["Aletheia-ng/pretrain_test"],1)
+    os.environ.setdefault("PREP_STATE_PATH", "/data/data_struct.json")
+
+    # Skip if bins already exist and are non-empty, unless FORCE_PREP=1
+    def _is_nonempty(path: str) -> bool:
+        try:
+            return os.path.exists(path) and os.path.getsize(path) > 0
+        except Exception:
+            return False
+
+    if _is_nonempty(os.environ["TRAIN_DATA_PATH"]) and _is_nonempty(os.environ["VAL_DATA_PATH"]) and os.getenv("FORCE_PREP", "0") != "1":
+        print("📁 Existing tokenized bins found. Skipping re-tokenization.")
+    else:
+        prepare.run(["Aletheia-ng/pretrain_test"], 1)
     
     # Validate the created data files
     import numpy as np
@@ -263,8 +274,8 @@ def prepare_data():
 def main():
 
     # Prepare data first
-    print("📁 Preparing data...")
-    prepare_data.remote()
+    # print("📁 Preparing data...")
+    # prepare_data.remote()
 
     result = train_sabiyarn.remote(
         attention_type="MLA",

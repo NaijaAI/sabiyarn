@@ -542,13 +542,33 @@ class SabiYarnTrainer:
     def setup_data(self):
         """Setup data loading."""
         LOG.info("Preparing dataset...")
-        # Ensure prepare writes to the configured paths 
+        # Ensure prepare writes to the configured paths
         try:
             os.environ["TRAIN_DATA_PATH"] = self.config.train_data_path
             os.environ["VAL_DATA_PATH"] = self.config.eval_data_path
+            # Persist processed-files ledger on the same volume as the bins (default)
+            state_dir = os.path.dirname(self.config.train_data_path)
+            os.environ.setdefault("PREP_STATE_PATH", os.path.join(state_dir, "data_struct.json"))
         except Exception:
             pass
-        prepare.run(["Aletheia-ng/pretrain_test"], os.cpu_count())
+
+        # Skip re-tokenization if bins already exist and are non-empty, unless FORCE_PREP=1
+        def _is_nonempty(path: str) -> bool:
+            try:
+                return os.path.exists(path) and os.path.getsize(path) > 0
+            except Exception:
+                return False
+
+        if _is_nonempty(self.config.train_data_path) and _is_nonempty(self.config.eval_data_path) and os.getenv("FORCE_PREP", "0") != "1":
+            try:
+                import numpy as np
+                tr = np.memmap(self.config.train_data_path, dtype=np.uint16, mode="r")
+                va = np.memmap(self.config.eval_data_path, dtype=np.uint16, mode="r")
+                LOG.info(f"Using existing bins: train={len(tr)} tokens, val={len(va)} tokens")
+            except Exception:
+                LOG.info("Using existing bins (could not read counts)")
+        else:
+            prepare.run(["Aletheia-ng/pretrain_test"], os.cpu_count())
         
         # Initialize tokenizer if available
         self.tokenizer = None
