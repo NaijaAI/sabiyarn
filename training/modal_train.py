@@ -188,7 +188,7 @@ def train_sabiyarn(
         # System
         device="cuda",
         dtype=dtype,
-        compile_model=True,  # Disable for debugging
+        compile_model=compile_model,  # Disable for debugging
     )
     
     print("Starting SabiYarn training on Modal GPU...")
@@ -269,7 +269,7 @@ def main():
     result = train_sabiyarn.remote(
         attention_type="MLA",
         dim=512,
-        n_layers=10,
+        n_layers=12,
         n_heads=8,
         n_kv_heads=4,
         use_moe=False,
@@ -280,7 +280,7 @@ def main():
         use_cut_cross_entropy=True,
         layer_sharing=True,
         layer_sharing_strategy="immediate",
-        n_unique_layers=5,
+        n_unique_layers=6,
         max_iters=10000,  # Shorter for testing
         warmup_iters=300,
         lr_decay_iters=1000,
