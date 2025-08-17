@@ -569,6 +569,7 @@ class SabiYarnTrainer:
             self.model = SabiYarn(model_args)
             model_size_info = self.model.get_model_size()
             LOG.info(f"Model initialized from scratch: {model_size_info}")
+            LOG.info(f"Model: {self.model}")
             
             # Update W&B with actual model size
             if self.config.wandb_log and self.master_process:
