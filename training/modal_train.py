@@ -268,7 +268,7 @@ def main():
 
     result = train_sabiyarn.remote(
         attention_type="MLA",
-        dim=256,
+        dim=512,
         n_layers=10,
         n_heads=8,
         n_kv_heads=4,
@@ -276,7 +276,7 @@ def main():
         n_routed_experts=4,
         n_activated_experts=2,
         use_multi_token_prediction=False,
-        compile_model=True,
+        compile_model=False,
         use_cut_cross_entropy=True,
         layer_sharing=True,
         layer_sharing_strategy="immediate",
