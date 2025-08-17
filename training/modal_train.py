@@ -86,7 +86,7 @@ def train_sabiyarn(
     out_dir: str = "/data/checkpoints",
     eval_interval: int = 2000,
     log_interval: int = 100,
-    run_dir: str = "/data/checkpoints/",
+    run_dir: str | None = None,
 
     init_from: str = "scratch",
     use_cut_cross_entropy=False,
@@ -267,7 +267,7 @@ def main():
     prepare_data.remote()
 
     result = train_sabiyarn.remote(
-        attention_type="self_attention",
+        attention_type="MLA",
         dim=256,
         n_layers=10,
         n_heads=8,
@@ -277,7 +277,7 @@ def main():
         n_activated_experts=2,
         use_multi_token_prediction=False,
         compile_model=True,
-        use_cut_cross_entropy=False,
+        use_cut_cross_entropy=True,
         layer_sharing=True,
         layer_sharing_strategy="immediate",
         n_unique_layers=5,
@@ -286,7 +286,6 @@ def main():
         lr_decay_iters=1000,
         wandb_run_name="small_standard_test",
         init_from="scratch",
-   
     )
     
     if result:
