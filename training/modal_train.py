@@ -286,6 +286,7 @@ def main():
         lr_decay_iters=1000,
         wandb_run_name="small_standard_test",
         init_from="scratch",
+        run_dir="/data/checkpoints/mla_test_1",
     )
     
     if result:
