@@ -52,7 +52,7 @@ from training.training_attention_mask import create_causal_mask, create_causal_m
 from transformers import AutoTokenizer
 from bitsandbytes import optim as bnb_optim
 
-
+CUDA_LAUNCH_BLOCKING=1
 try:
     import psutil
     import GPUtil
@@ -554,7 +554,7 @@ class SabiYarnTrainer:
         self.tokenizer = None
         if AutoTokenizer is not None:
             try:
-                self.tokenizer = AutoTokenizer.from_pretrained("Aletheia-ng/SabiYarn-125M")
+                self.tokenizer = AutoTokenizer.from_pretrained("Aletheia-ng/SabiYarn_test")
                 LOG.info("Tokenizer loaded successfully")
             except Exception as e:
                 LOG.warning(f"Could not load tokenizer: {e}")
@@ -904,8 +904,25 @@ class SabiYarnTrainer:
         """Generate sample text for monitoring training progress."""
         if self.tokenizer is None:
             return
-            
+        
+        input_ids = self.tokenizer.encode("The boy", return_tensors="pt").to(self.config.device)  
+        
         self.model.eval()
+        with torch.no_grad():
+            generated = self.model.generate(
+                input_ids,
+                max_new_tokens=self.config.generation_max_tokens,
+                use_multi_token=self.model.use_multi_token
+            )
+    
+        output_text = self.tokenizer.decode(generated[0].tolist(), skip_special_tokens=True)
+        
+        LOG.info("=" * 50)
+        LOG.info(f"Input: The boy")
+        LOG.info(f"Generated: {output_text}")
+        LOG.info("=" * 50)
+
+        # self.model.eval()
         try:
             with torch.no_grad():
                 generated = self.model.generate(
