@@ -835,7 +835,7 @@ class SabiYarnTrainer:
                         targets,
                         shift=True,
                         ignore_index=-100,
-                        impl="torch_compile"
+                        impl="torch"
                     )
                 else:
                     total_loss = F.cross_entropy(
