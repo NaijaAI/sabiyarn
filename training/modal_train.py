@@ -300,7 +300,7 @@ def main():
         warmup_iters=300,
         lr_decay_iters=1000,
         wandb_run_name="MLA_standard_test_2",
-        init_from="scratch",
+        init_from="resume",
         run_dir="/data/checkpoints/mla_test_2",
     )
     
