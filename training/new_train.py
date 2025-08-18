@@ -601,7 +601,7 @@ class SabiYarnTrainer:
             # Prefer an explicit resume_run_dir, else use the trainer's run_dir
             resume_dir = self.config.resume_run_dir or self.run_dir
             ckpt_path = os.path.join(resume_dir, "ckpt.pt")
-            checkpoint = torch.load(ckpt_path, map_location=self.config.device)
+            checkpoint = torch.load(ckpt_path, map_location=self.config.device, weights_only=False)
             
             model_args = checkpoint["model_args"]
             self.model = SabiYarn(model_args)
