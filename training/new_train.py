@@ -192,6 +192,7 @@ class SabiYarnTrainer:
         self.setup_distributed()
         self.setup_output_dirs()
         self.setup_logging()
+        self._resume_checkpoint = None
         self.setup_data()
         self.setup_model()
         self.setup_optimizer()
@@ -385,6 +386,20 @@ class SabiYarnTrainer:
             return result.stdout.strip() if result.returncode == 0 else None
         except:
             return None
+
+    def _get_resume_checkpoint(self):
+        """Load and cache the resume checkpoint once; None if not resuming."""
+        if self.config.init_from != "resume":
+            return None
+        if self._resume_checkpoint is not None:
+            return self._resume_checkpoint
+        resume_dir = self.config.resume_run_dir or self.run_dir
+        ckpt_path = os.path.join(resume_dir, "ckpt.pt")
+        # Use weights_only=False because we store additional metadata
+        self._resume_checkpoint = torch.load(
+            ckpt_path, map_location=self.config.device, weights_only=False
+        )
+        return self._resume_checkpoint
     
     def get_system_metrics(self) -> Dict[str, float]:
         """Get current system metrics."""
@@ -597,11 +612,8 @@ class SabiYarnTrainer:
                 wandb.config.update({"model_size": model_size_info}, allow_val_change=True)
             
         elif self.config.init_from == "resume":
-            # Load from checkpoint
-            # Prefer an explicit resume_run_dir, else use the trainer's run_dir
-            resume_dir = self.config.resume_run_dir or self.run_dir
-            ckpt_path = os.path.join(resume_dir, "ckpt.pt")
-            checkpoint = torch.load(ckpt_path, map_location=self.config.device, weights_only=False)
+            # Load from checkpoint (single-pass via cache)
+            checkpoint = self._get_resume_checkpoint()
             
             model_args = checkpoint["model_args"]
             self.model = SabiYarn(model_args)
@@ -734,10 +746,10 @@ class SabiYarnTrainer:
             
         # Load optimizer state if resuming
         if self.config.init_from == "resume":
-            resume_dir = self.config.resume_run_dir or self.run_dir
-            ckpt_path = os.path.join(resume_dir, "ckpt.pt")
-            checkpoint = torch.load(ckpt_path, map_location=self.config.device)
+            checkpoint = self._get_resume_checkpoint()
             self.optimizer.load_state_dict(checkpoint["optimizer"])
+            # Free after use to release memory
+            self._resume_checkpoint = None
             
         LOG.info(f"Optimizer initialized: {self.config.optimizer_type}")
         
