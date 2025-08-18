@@ -173,6 +173,7 @@ class TrainingConfig:
     
     # Generation testing
     display_model_output_iter: int = 768
+    enable_generation_during_training: bool = False
     generation_max_tokens: int = 100
     
     # System
@@ -1126,8 +1127,12 @@ class SabiYarnTrainer:
                 break
                 
             # Generate sample text occasionally
-            if (self.iter_num % self.config.display_model_output_iter == 0 and 
-                self.master_process and self.iter_num > 0):
+            if (
+                self.config.enable_generation_during_training
+                and self.iter_num % self.config.display_model_output_iter == 0
+                and self.master_process
+                and self.iter_num > 0
+            ):
                 self.generate_sample_text(X)
                 
             # Training step with gradient accumulation

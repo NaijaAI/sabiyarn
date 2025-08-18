@@ -189,6 +189,9 @@ def train_sabiyarn(
         device="cuda",
         dtype=dtype,
         compile_model=compile_model,  # Disable for debugging
+
+        # Generation during training
+        enable_generation_during_training=False,
     )
     
     print("Starting SabiYarn training on Modal GPU...")
