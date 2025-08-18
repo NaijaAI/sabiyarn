@@ -289,7 +289,7 @@ def main():
         use_moe=False,
         n_routed_experts=5,
         n_activated_experts=2,
-        learning_rate=1e-4,
+        learning_rate=3e-4,
         use_multi_token_prediction=False,
         compile_model=False,
         use_cut_cross_entropy=True,
@@ -300,7 +300,7 @@ def main():
         warmup_iters=300,
         lr_decay_iters=1000,
         wandb_run_name="small_standard_test",
-        init_from="scratch",
+        init_from="resume",
         run_dir="/data/checkpoints/mla_test_1",
     )
     
