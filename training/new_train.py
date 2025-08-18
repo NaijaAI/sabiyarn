@@ -734,7 +734,8 @@ class SabiYarnTrainer:
             
         # Load optimizer state if resuming
         if self.config.init_from == "resume":
-            ckpt_path = os.path.join(self.config.out_dir, "ckpt.pt")
+            resume_dir = self.config.resume_run_dir or self.run_dir
+            ckpt_path = os.path.join(resume_dir, "ckpt.pt")
             checkpoint = torch.load(ckpt_path, map_location=self.config.device)
             self.optimizer.load_state_dict(checkpoint["optimizer"])
             
