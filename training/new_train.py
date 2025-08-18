@@ -199,8 +199,11 @@ class SabiYarnTrainer:
         self.setup_compilation()
         
         # Training state
-        self.iter_num = 0
-        self.best_val_loss = 1e9
+        # Only initialize defaults when starting from scratch.
+        # When resuming, these are loaded inside setup_model().
+        if self.config.init_from != "resume":
+            self.iter_num = 0
+            self.best_val_loss = 1e9
         self.local_iter_num = 0
         self.running_mfu = -1.0
         self.step_start_time = time.time()
