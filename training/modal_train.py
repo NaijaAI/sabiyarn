@@ -289,19 +289,19 @@ def main():
         use_moe=False,
         n_routed_experts=5,
         n_activated_experts=2,
-        learning_rate=3e-4,
+        learning_rate=1e-4,
         use_multi_token_prediction=False,
         compile_model=False,
-        use_cut_cross_entropy=True,
+        use_cut_cross_entropy=False,
         layer_sharing=True,
         layer_sharing_strategy="immediate",
         n_unique_layers=7,
         max_iters=10000,  # Shorter for testing
         warmup_iters=300,
         lr_decay_iters=1000,
-        wandb_run_name="small_standard_test",
-        init_from="resume",
-        run_dir="/data/checkpoints/mla_test_1",
+        wandb_run_name="MLA_standard_test_2",
+        init_from="scratch",
+        run_dir="/data/checkpoints/mla_test_2",
     )
     
     if result:
