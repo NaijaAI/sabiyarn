@@ -30,9 +30,7 @@ app = modal.App("sabiyarn-generation-test")
 # Same volume as training
 volume = modal.Volume.from_name("sabiyarn-data", create_if_missing=True)
 
-import torch
-import torch.nn.functional as F
-from transformers import AutoTokenizer
+
 
 
 @app.function(
@@ -42,6 +40,7 @@ from transformers import AutoTokenizer
     volumes={"/data": volume},
     secrets=[modal.Secret.from_name("hf-secret")],
 )
+
 def test_generation(
     prompts=None,
     max_new_tokens: int = 128,
@@ -54,7 +53,10 @@ def test_generation(
     import os
     import sys
     from glob import glob
-
+    import torch
+    import torch.nn.functional as F
+    from transformers import AutoTokenizer
+    
     os.chdir("/app")
     sys.path.insert(0, "/app")
 
