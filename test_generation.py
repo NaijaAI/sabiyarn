@@ -34,6 +34,7 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer
 
+
 @app.function(
     gpu="A100-40GB",
     timeout=1200,
