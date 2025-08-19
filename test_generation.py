@@ -8,9 +8,6 @@ Usage:
 """
 
 import modal
-import torch
-import torch.nn.functional as F
-from transformers import AutoTokenizer
 
 # Create Modal app with same image as training
 image = (
@@ -32,6 +29,10 @@ app = modal.App("sabiyarn-generation-test")
 
 # Same volume as training
 volume = modal.Volume.from_name("sabiyarn-data", create_if_missing=True)
+
+import torch
+import torch.nn.functional as F
+from transformers import AutoTokenizer
 
 @app.function(
     gpu="A100-40GB",
