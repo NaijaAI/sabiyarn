@@ -281,7 +281,7 @@ def main():
     # prepare_data.remote()
 
     result = train_sabiyarn.remote(
-        attention_type="MLA",
+        attention_type="self_attention",
         dim=512,
         n_layers=14,
         n_heads=8,
@@ -292,16 +292,16 @@ def main():
         learning_rate=1e-4,
         use_multi_token_prediction=False,
         compile_model=False,
-        use_cut_cross_entropy=False,
+        use_cut_cross_entropy=True,
         layer_sharing=True,
         layer_sharing_strategy="immediate",
         n_unique_layers=7,
         max_iters=10000,  # Shorter for testing
         warmup_iters=300,
         lr_decay_iters=1000,
-        wandb_run_name="MLA_standard_test_2",
+        wandb_run_name="self_attention_test_1",
         init_from="resume",
-        run_dir="/data/checkpoints/mla_test_2",
+        run_dir="/data/checkpoints/self_attention_test_1",
     )
     
     if result:
