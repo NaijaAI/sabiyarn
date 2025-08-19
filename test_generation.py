@@ -70,7 +70,7 @@ def test_generation(
     print("🔍 Running generation from checkpoint")
 
     # Locate checkpoint within per-run structure
-    ckpt_base = "/data/checkpoints"
+    ckpt_base = "/data/checkpoints/self_attention_test_1"
     pointer_file = os.path.join(ckpt_base, "LATEST_RUN.txt")
     resolved_run_dir = None
     if run_dir and os.path.isdir(run_dir):
@@ -151,13 +151,13 @@ def test_generation(
     model.eval()
 
     print("📝 Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained("Aletheia-ng/SabiYarn-125M")
+    tokenizer = AutoTokenizer.from_pretrained("Aletheia-ng/SabiYarn_test")
 
     # Defaults
     if prompts is None:
         prompts = [
-            "<classify> Empeleni, amakhodi wendawo awasebenzi nakancane ekukopeni okungekho emthethweni; ukukopa kwe-bit nge-bit kwediski kuzoyenza idlale kahle kunoma iyiphi idivayisi lapho idiski yangempela ingadlala khona",
-            "<prompt> Write a short poem about the ocean. <response>",
+            "The boy",
+            "I am a",
         ]
 
     outputs = []
