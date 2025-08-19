@@ -891,9 +891,9 @@ class SabiYarnTrainer:
                     hidden_states,
                     raw_model.lm_head.weight,
                     targets,
-                    shift=True,
+                    shift=False,
                     ignore_index=-100,
-                    impl="torch_compile"
+                    # impl="torch_compile"
                 )
             else:
                 total_loss = F.cross_entropy(
