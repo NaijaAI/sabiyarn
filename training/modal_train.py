@@ -300,7 +300,7 @@ def main():
         warmup_iters=300,
         lr_decay_iters=1000,
         wandb_run_name="self_attention_test_1",
-        init_from="resume",
+        init_from="scratch",
         run_dir="/data/checkpoints/self_attention_test_1",
     )
     
