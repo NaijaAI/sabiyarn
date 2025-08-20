@@ -38,7 +38,7 @@ DATASET_REVISION = os.getenv("HF_DATASET_REVISION")  # Optional pin to commit/ta
 # best number might be different from num_proc above as it also depends on NW speed.
 # it is better than 1 usually though
 
-DATASETS = config.data.dataset
+DATASETS = config.data.datasets
 
 PROCESS_ONE_FILE_AT_A_TIME = config.model.tokenizer.process_one_file_at_a_time #Should be True
 
