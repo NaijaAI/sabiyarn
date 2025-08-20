@@ -6,12 +6,14 @@ from tqdm import tqdm
 import numpy as np
 
 # import tiktoken
-from datasets import load_dataset
+from datasets import load_dataset, DownloadConfig
 from dotenv import load_dotenv
 from omegaconf import OmegaConf
 from transformers import AutoTokenizer
-from huggingface_hub import list_repo_files
+import re
+from huggingface_hub import list_repo_files, hf_hub_download
 import json
+from training import constant_tokens
 from training import constant_tokens
 import structlog
 from dotenv import load_dotenv
@@ -29,15 +31,16 @@ config_path = os.path.join(project_root, "config", "config.yaml")
 config = OmegaConf.load(config_path)
 
 READ_TOKEN = os.getenv("HF_API_KEY")
-num_proc = config.model.tokenizer.num_proc
+num_proc = min(config.model.tokenizer.num_proc, os.cpu_count())
+DATASET_REVISION = os.getenv("HF_DATASET_REVISION")  # Optional pin to commit/tag for stable cache keys
 
 # number of workers in load_dataset() call
 # best number might be different from num_proc above as it also depends on NW speed.
 # it is better than 1 usually though
 
-DATASETS = config.data.datasets
+DATASETS = config.data.dataset
 
-PROCESS_ONE_FILE_AT_A_TIME = config.model.tokenizer.process_file_one_at_a_time  #Should be True
+PROCESS_ONE_FILE_AT_A_TIME = config.model.tokenizer.process_one_file_at_a_time #Should be True
 
 def get_tokenizer_and_eot(tokenizer_name):
     """Initializes and returns the tokenizer and end_of_text_token."""
@@ -110,12 +113,38 @@ def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc):
     """
     Main function to process and tokenize datasets, saving to memory-mapped files.
     """
+    # Resolve output paths: prefer env vars set by the runtime, else config defaults
+    env_train_path = os.getenv("TRAIN_DATA_PATH")
+    env_val_path = os.getenv("VAL_DATA_PATH")
+    default_train_path = (
+        config.data.train_data_path if hasattr(config, "data") and hasattr(config.data, "train_data_path")
+        else getattr(config, "train_data_path", "data/train.bin")
+    )
+    default_val_path = (
+        config.data.eval_data_path if hasattr(config, "data") and hasattr(config.data, "eval_data_path")
+        else getattr(config, "eval_data_path", "data/val.bin")
+    )
+    TRAIN_BIN_PATH = env_train_path or default_train_path
+    VAL_BIN_PATH = env_val_path or default_val_path
+    # Ensure directories exist
+    os.makedirs(os.path.dirname(TRAIN_BIN_PATH), exist_ok=True)
+    os.makedirs(os.path.dirname(VAL_BIN_PATH), exist_ok=True)
+    # Persist processed-files ledger on a stable path so repeated runs don't reprocess.
+    # Prefer PREP_STATE_PATH env; else default to the directory of TRAIN_BIN_PATH (typically under /data on Modal).
+    state_path_env = os.getenv("PREP_STATE_PATH")
+    default_state_dir = os.path.dirname(TRAIN_BIN_PATH) if TRAIN_BIN_PATH else "."
+    STATE_PATH = state_path_env or os.path.join(default_state_dir, "data_struct.json")
+
     files_processed = {}
-    if os.path.exists("data_struct.json"):
-        with open("data_struct.json", "r") as t:
-            files_processed = json.load(t)
+    if os.path.exists(STATE_PATH):
+        try:
+            with open(STATE_PATH, "r") as t:
+                files_processed = json.load(t)
+        except Exception:
+            LOG.warning(f"Failed to read state file at {STATE_PATH}; starting fresh...")
+            files_processed = {}
     else:
-        LOG.info("The data_struct file does not exist. Starting fresh...")
+        LOG.info(f"State file does not exist at {STATE_PATH}. Starting fresh...")
 
     tokenizer, end_of_text_token = get_tokenizer_and_eot(config.model.tokenizer.name)
 
@@ -130,13 +159,23 @@ def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc):
 
         if not PROCESS_ONE_FILE_AT_A_TIME:
             LOG.info(f"Downloading dataset '{dataset_name}'...")
-            loaded_dataset = load_dataset(
-                dataset_name,
+            load_kwargs = dict(
                 num_proc=num_proc_load_dataset,
                 trust_remote_code=True,
                 token=READ_TOKEN,
                 verification_mode="no_checks",
             )
+            if DATASET_REVISION:
+                load_kwargs["revision"] = DATASET_REVISION
+            try:
+                loaded_dataset = load_dataset(dataset_name, **load_kwargs)
+            except ValueError as e:
+                # Handle cache hash mismatch by forcing re-download
+                if "Couldn't find cache" in str(e):
+                    load_kwargs["download_config"] = DownloadConfig(force_download=True, resume_download=False, use_etag=False)
+                    loaded_dataset = load_dataset(dataset_name, **load_kwargs)
+                else:
+                    raise
             # By default only contains the 'train' split, so create a test split
             train_split = loaded_dataset["train"]
             dataset_length = len(train_split)
@@ -162,7 +201,7 @@ def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc):
 
             LOG.info("Concatenating and binarizing splits...")
             for split, dset in tokenized_dataset.items():
-                filename = config.train_data_path if split.lower() == "train" else config.eval_data_path
+                filename = TRAIN_BIN_PATH if split.lower() == "train" else VAL_BIN_PATH
                 write_to_memmap(dset, filename, np.uint16, log_prefix=f"[{dataset_name} - {split}]")
             
             # For this mode, consider the whole dataset as processed once done
@@ -182,16 +221,24 @@ def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc):
                 continue
 
             for file in files_to_process:
-                LOG.info(f"Downloading and processing {file} from dataset '{dataset_name}'...")
-                
-                # IMPORTANT: Use dataset_name from the loop, not config["dataset"]
+                # Sanitize potentially odd filenames (remove control chars)
+                sanitized_file = re.sub(r"[\x00-\x1f\x7f]", "", file).strip()
+                LOG.info(f"Downloading and processing {sanitized_file} from dataset '{dataset_name}'...")
+
+                # Download the parquet file locally via HF hub to avoid URL quoting issues
+                revision = DATASET_REVISION if DATASET_REVISION else "main"
+                local_path = hf_hub_download(
+                    repo_id=dataset_name,
+                    filename=sanitized_file,
+                    repo_type="dataset",
+                    revision=revision,
+                    token=READ_TOKEN,
+                )
+
+                # Load from the local parquet path
                 loaded_dataset_file = load_dataset(
-                    dataset_name,
-                    data_files=[file],
-                    num_proc=num_proc_load_dataset,
-                    trust_remote_code=True, # Added this for consistency with first branch
-                    token=READ_TOKEN, # Added this for consistency
-                    verification_mode="no_checks",
+                    "parquet",
+                    data_files={"train": local_path},
                 )
 
                 train_split_file = loaded_dataset_file["train"]
@@ -218,14 +265,17 @@ def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc):
 
                 LOG.info("Concatenating and binarizing splits...")
                 for split, dset in tokenized_dataset_file.items():
-                    filename = config.data.train_data_path if split.lower() == "train" else config.data.eval_data_path
+                    filename = TRAIN_BIN_PATH if split.lower() == "train" else VAL_BIN_PATH
                     write_to_memmap(dset, filename, np.uint16, log_prefix=f"[{file} - {split}]")
 
                 # Update processed files immediately after a file is successfully processed
                 current_dataset_processed_files.append(file)
                 files_processed[dataset_name] = current_dataset_processed_files # Update the main dict
-                with open("data_struct.json", "w") as f:
-                    json.dump(files_processed, f, indent=4) # Save progress
+                try:
+                    with open(STATE_PATH, "w") as f:
+                        json.dump(files_processed, f, indent=4) # Save progress
+                except Exception as e:
+                    LOG.warning(f"Failed to write state file {STATE_PATH}: {e}")
                 LOG.info(f"Successfully processed and saved progress for {file}.")
 
         # After processing all files/the entire dataset, update the main files_processed dictionary
@@ -234,9 +284,12 @@ def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc):
         # For the `PROCESS_ONE_FILE_AT_A_TIME = False` case, we save after each dataset too
         # To avoid data loss if crash between datasets.
         if not PROCESS_ONE_FILE_AT_A_TIME:
-             with open("data_struct.json", "w") as f:
-                json.dump(files_processed, f, indent=4)
-             LOG.info(f"Successfully processed and saved progress for entire dataset '{dataset_name}'.")
+            try:
+                with open(STATE_PATH, "w") as f:
+                    json.dump(files_processed, f, indent=4)
+                LOG.info(f"Successfully processed and saved progress for entire dataset '{dataset_name}'.")
+            except Exception as e:
+                LOG.warning(f"Failed to write state file {STATE_PATH}: {e}")
 
 if __name__ == "__main__":
     run()

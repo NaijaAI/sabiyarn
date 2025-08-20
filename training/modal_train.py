@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+ #!/usr/bin/env python3
 """
 Modal GPU training wrapper for SabiYarn models.
 """
@@ -36,23 +36,23 @@ volume = modal.Volume.from_name("sabiyarn-data", create_if_missing=True)
     timeout=86400,  # 24 hours
     image=image,
     volumes={"/data": volume},
-    secrets=[modal.Secret.from_name("wandb-secret")],  # Store W&B API key
+    secrets=[modal.Secret.from_name("wandb-secret"), modal.Secret.from_name("hf-secret")],  # Store W&B API key
     cpu=8,
     # memory=32768,  # 32GB RAM
 )
 def train_sabiyarn(
     # Model configuration
-    attention_type: str = "MLA",
+    attention_type: str = "self_attention",
     dim: int = 2048,
     n_layers: int = 20,
     n_heads: int = 16,
     n_kv_heads: int = 8,
-    vocab_size: int = 52000,
+    vocab_size: int = 64000,
     max_seq_len: int = 1024,
     max_batch_size: int = 32,
     
     # MoE configuration
-    use_moe: bool = True,
+    use_moe: bool = False,
     n_routed_experts: int = 16,
     n_activated_experts: int = 8,
     moe_inter_dim: int = 2048,
@@ -67,22 +67,29 @@ def train_sabiyarn(
     mtp_only_training: bool = True,
     
     # Layer Sharing
-    use_layer_sharing: bool = True,
+    layer_sharing: bool = True,
+    layer_sharing_strategy: str = "immediate",
     n_unique_layers: int = 10,
     
     # Training configuration
-    train_batch_size: int = 8,
+    train_batch_size: int = 16,
     gradient_accumulation_steps: int = 5,
     learning_rate: float = 3e-4,
     max_iters: int = 60000,
     weight_decay: float = 1e-1,
     grad_clip: float = 1.0,
+    warmup_iters: int = 300,
+    lr_decay_iters: int = 1000,
     
     # Data and checkpointing
     dataset: str = "Aletheia-ng/pretrain_test",
     out_dir: str = "/data/checkpoints",
     eval_interval: int = 2000,
     log_interval: int = 100,
+    run_dir: str | None = None,
+
+    init_from: str = "scratch",
+    use_cut_cross_entropy=False,
     
     # W&B configuration
     wandb_project: str = "sabiyarn-modal-training",
@@ -136,8 +143,12 @@ def train_sabiyarn(
         mtp_only_training=mtp_only_training,
         
         # Layer Sharing
-        use_layer_sharing=use_layer_sharing,
+        layer_sharing=layer_sharing,
+        layer_sharing_strategy=layer_sharing_strategy,
         n_unique_layers=n_unique_layers,
+        
+        #CCE
+        use_cut_cross_entropy=use_cut_cross_entropy,
         
         # Training Configuration
         train_batch_size=train_batch_size,
@@ -145,6 +156,8 @@ def train_sabiyarn(
         learning_rate=learning_rate,
         max_iters=max_iters,
         weight_decay=weight_decay,
+        warmup_iters=warmup_iters,
+        lr_decay_iters=lr_decay_iters,
         grad_clip=grad_clip,
         
         # Data paths (Modal persistent volume)
@@ -154,6 +167,7 @@ def train_sabiyarn(
         out_dir=out_dir,
         eval_interval=eval_interval,
         log_interval=log_interval,
+        run_dir=run_dir,
         
         # W&B Configuration
         wandb_log=True,
@@ -168,10 +182,16 @@ def train_sabiyarn(
         log_moe_metrics=use_moe,
         monitor_interval=50,
         
+        init_from=init_from,
+        
+
         # System
         device="cuda",
         dtype=dtype,
-        compile_model=False,  # Disable for debugging
+        compile_model=compile_model,  # Disable for debugging
+
+        # Generation during training
+        enable_generation_during_training=False,
     )
     
     print("Starting SabiYarn training on Modal GPU...")
@@ -191,7 +211,11 @@ def train_sabiyarn(
 @app.function(
     image=image,
     volumes={"/data": volume},
+    timeout=86400,  # 24 hours
+    secrets=[modal.Secret.from_name("hf-secret")],
+    cpu=8
 )
+
 def prepare_data():
     """Prepare training data on Modal."""
     import os
@@ -204,11 +228,31 @@ def prepare_data():
     
     print("📁 Preparing training data...")
     
-    # Set data paths to persistent volume
+    # Persist Hugging Face caches on the mounted Modal volume for stability
+    cache_root = "/data/hf_cache"
+    os.environ.setdefault("HF_HOME", cache_root)
+    os.environ.setdefault("HF_DATASETS_CACHE", os.path.join(cache_root, "datasets"))
+    os.environ.setdefault("TRANSFORMERS_CACHE", os.path.join(cache_root, "transformers"))
+    os.makedirs(os.environ["HF_HOME"], exist_ok=True)
+    os.makedirs(os.environ["HF_DATASETS_CACHE"], exist_ok=True)
+    os.makedirs(os.environ["TRANSFORMERS_CACHE"], exist_ok=True)
+
+    # Set data paths to persistent volume and persist state under /data
     os.environ["TRAIN_DATA_PATH"] = "/data/train.bin"
     os.environ["VAL_DATA_PATH"] = "/data/val.bin"
-    
-    prepare.run(["Aletheia-ng/pretrain_test"],1)
+    os.environ.setdefault("PREP_STATE_PATH", "/data/data_struct.json")
+
+    # Skip if bins already exist and are non-empty, unless FORCE_PREP=1
+    def _is_nonempty(path: str) -> bool:
+        try:
+            return os.path.exists(path) and os.path.getsize(path) > 0
+        except Exception:
+            return False
+
+    if _is_nonempty(os.environ["TRAIN_DATA_PATH"]) and _is_nonempty(os.environ["VAL_DATA_PATH"]) and os.getenv("FORCE_PREP", "0") != "1":
+        print("📁 Existing tokenized bins found. Skipping re-tokenization.")
+    else:
+        prepare.run(["Aletheia-ng/pretrain_test"], 1)
     
     # Validate the created data files
     import numpy as np
@@ -233,22 +277,31 @@ def prepare_data():
 def main():
 
     # Prepare data first
-    print("📁 Preparing data...")
-    prepare_data.remote()
+    # print("📁 Preparing data...")
+    # prepare_data.remote()
 
     result = train_sabiyarn.remote(
-        attention_type="MLA",
+        attention_type="self_attention",
         dim=512,
-        n_layers=10,
+        n_layers=14,
         n_heads=8,
         n_kv_heads=4,
-        use_moe=True,
-        n_routed_experts=4,
+        use_moe=False,
+        n_routed_experts=5,
         n_activated_experts=2,
-        use_layer_sharing=True,
-        n_unique_layers=5,
+        learning_rate=1e-4,
+        use_multi_token_prediction=False,
+        compile_model=False,
+        use_cut_cross_entropy=True,
+        layer_sharing=True,
+        layer_sharing_strategy="immediate",
+        n_unique_layers=7,
         max_iters=10000,  # Shorter for testing
-        wandb_run_name="small_moe_test"
+        warmup_iters=300,
+        lr_decay_iters=1000,
+        wandb_run_name="self_attention_test_1",
+        init_from="scratch",
+        run_dir="/data/checkpoints/self_attention_test_1",
     )
     
     if result:

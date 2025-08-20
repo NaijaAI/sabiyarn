@@ -39,7 +39,7 @@ data:
 
 # model
 model:
-  vocab_size : 52000
+  vocab_size : 64000
   n_layers : 24
   n_heads : 8
   dropout : 0.0  # for pretraining 0 is good, for finetuning try 0.1+
@@ -68,8 +68,7 @@ model:
   tokenizer:
     name: "Aletheia-ng/SabiYarn_test"
     num_proc: 64
-    process_file_one_at_a_time: true
-
+    process_one_file_at_a_time: True
 # adamw optimizer
 optimizer:
   name : "adam"

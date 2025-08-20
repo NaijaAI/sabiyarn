@@ -2,9 +2,12 @@ name: Test Model
 
 on:
   push:
-    branches: main
+    branches: sam_mla
   pull_request:
     branches: main
+env:
+  HF_TOKEN: ${{ secrets.HF_API_KEY }}
+  HF_DATASET_REVISION: "main"
 
 jobs:
   test:
@@ -21,6 +24,12 @@ jobs:
 
       - name: Setup Modal
         run: modal token set --token-id ${{ secrets.MODAL_TOKEN_ID }} --token-secret ${{ secrets.MODAL_TOKEN_SECRET }}
-     
-      - name: Run tests on Modal GPU
-        run: modal run tests/test_model_initialization.py::modal_main
+
+      - name: Test generation
+        run: modal run test_generation.py::main
+
+      # - name: Run tests on Modal GPU
+      #   run: modal run tests/test_model_initialization.py::modal_main
+
+      # - name: Train model
+      #   run: modal run training/modal_train.py::main

@@ -12,6 +12,9 @@ import sys
 import time
 import math
 from datetime import datetime
+import json
+import random
+import string
 project_root = os.path.join(os.path.dirname(__file__), '..')
 sys.path.insert(0, project_root)
 
@@ -45,11 +48,12 @@ from cut_cross_entropy import linear_cross_entropy
 from training.utils import *
 from training.constant_tokens import MASK
 from training.training_attention_mask import create_causal_mask, create_causal_mask_optimized
+from training.training_attention_mask import create_causal_mask, create_causal_mask_optimized
 
 from transformers import AutoTokenizer
 from bitsandbytes import optim as bnb_optim
 
-
+CUDA_LAUNCH_BLOCKING=1
 try:
     import psutil
     import GPUtil
@@ -64,10 +68,10 @@ LOG = structlog.stdlib.get_logger()
 class TrainingConfig:
     # Model Architecture
     attention_type: str = "MLA"  # "self_attention", "differential_attention", "MLA"
-    dim: int = 256
-    n_layers: int = 10
-    n_heads: int = 4
-    n_kv_heads: Optional[int] = 2
+    dim: int = 2048
+    n_layers: int = 20
+    n_heads: int = 16
+    n_kv_heads: Optional[int] = 8
     vocab_size: int = 64000
     max_seq_len: int = 1024
     max_batch_size: int = 32
@@ -101,7 +105,8 @@ class TrainingConfig:
     mtp_only_training: bool = True  # When True, only use MTP loss for training
     
     # Layer Sharing (MobileLLM-style)
-    use_layer_sharing: bool = True
+    layer_sharing_strategy: str = "immediate"
+    layer_sharing: bool = True
     n_unique_layers: Optional[int] = 10
     layer_sharing_strategy  = 'immediate'
     
@@ -144,7 +149,9 @@ class TrainingConfig:
     eval_data_path: str = "./val.bin"
     
     # Logging and checkpointing
-    out_dir: str = "out"
+    out_dir: str = "out"  # Base directory that will contain per-run subfolders
+    run_dir: Optional[str] = None  # Full path to the current run directory (auto-created if None)
+    resume_run_dir: Optional[str] = None  # When resuming, explicitly set the run folder
     eval_interval: int = 2000
     log_interval: int = 100
     eval_iters: int = 200
@@ -168,6 +175,7 @@ class TrainingConfig:
     
     # Generation testing
     display_model_output_iter: int = 768
+    enable_generation_during_training: bool = False
     generation_max_tokens: int = 100
     
     # System
@@ -184,15 +192,20 @@ class SabiYarnTrainer:
         self.config = config
         self.setup_environment()
         self.setup_distributed()
+        self.setup_output_dirs()
         self.setup_logging()
+        self._resume_checkpoint = None
         self.setup_data()
         self.setup_model()
         self.setup_optimizer()
         self.setup_compilation()
         
         # Training state
-        self.iter_num = 0
-        self.best_val_loss = 1e9
+        # Only initialize defaults when starting from scratch.
+        # When resuming, these are loaded inside setup_model().
+        if self.config.init_from != "resume":
+            self.iter_num = 0
+            self.best_val_loss = 1e9
         self.local_iter_num = 0
         self.running_mfu = -1.0
         self.step_start_time = time.time()
@@ -270,7 +283,8 @@ class SabiYarnTrainer:
     def setup_logging(self):
         """Setup output directory and wandb logging."""
         if self.master_process:
-            os.makedirs(self.config.out_dir, exist_ok=True)
+            # Ensure run directory exists
+            os.makedirs(self.run_dir, exist_ok=True)
             
             if self.config.wandb_log:
                 # Check W&B authentication
@@ -292,6 +306,7 @@ class SabiYarnTrainer:
                     "dataset_name": self.config.dataset,
                     "hardware": self._get_hardware_info(),
                     "git_commit": self._get_git_commit(),
+                    "run_dir": self.run_dir,
                 })
                 
                 wandb.init(
@@ -376,6 +391,20 @@ class SabiYarnTrainer:
             return result.stdout.strip() if result.returncode == 0 else None
         except:
             return None
+
+    def _get_resume_checkpoint(self):
+        """Load and cache the resume checkpoint once; None if not resuming."""
+        if self.config.init_from != "resume":
+            return None
+        if self._resume_checkpoint is not None:
+            return self._resume_checkpoint
+        resume_dir = self.config.resume_run_dir or self.run_dir
+        ckpt_path = os.path.join(resume_dir, "ckpt.pt")
+        # Use weights_only=False because we store additional metadata
+        self._resume_checkpoint = torch.load(
+            ckpt_path, map_location=self.config.device, weights_only=False
+        )
+        return self._resume_checkpoint
     
     def get_system_metrics(self) -> Dict[str, float]:
         """Get current system metrics."""
@@ -534,13 +563,39 @@ class SabiYarnTrainer:
     def setup_data(self):
         """Setup data loading."""
         LOG.info("Preparing dataset...")
-        prepare.run(["Aletheia-ng/pretrain_test"],1)
+        # Ensure prepare writes to the configured paths
+        try:
+            os.environ["TRAIN_DATA_PATH"] = self.config.train_data_path
+            os.environ["VAL_DATA_PATH"] = self.config.eval_data_path
+            # Persist processed-files ledger on the same volume as the bins (default)
+            state_dir = os.path.dirname(self.config.train_data_path)
+            os.environ.setdefault("PREP_STATE_PATH", os.path.join(state_dir, "data_struct.json"))
+        except Exception:
+            pass
+
+        # Skip re-tokenization if bins already exist and are non-empty, unless FORCE_PREP=1
+        def _is_nonempty(path: str) -> bool:
+            try:
+                return os.path.exists(path) and os.path.getsize(path) > 0
+            except Exception:
+                return False
+
+        if _is_nonempty(self.config.train_data_path) and _is_nonempty(self.config.eval_data_path) and os.getenv("FORCE_PREP", "0") != "1":
+            try:
+                import numpy as np
+                tr = np.memmap(self.config.train_data_path, dtype=np.uint16, mode="r")
+                va = np.memmap(self.config.eval_data_path, dtype=np.uint16, mode="r")
+                LOG.info(f"Using existing bins: train={len(tr)} tokens, val={len(va)} tokens")
+            except Exception:
+                LOG.info("Using existing bins (could not read counts)")
+        else:
+            prepare.run(["Aletheia-ng/pretrain_test"], os.cpu_count())
         
         # Initialize tokenizer if available
         self.tokenizer = None
         if AutoTokenizer is not None:
             try:
-                self.tokenizer = AutoTokenizer.from_pretrained("Aletheia-ng/SabiYarn-125M")
+                self.tokenizer = AutoTokenizer.from_pretrained("Aletheia-ng/SabiYarn_test")
                 LOG.info("Tokenizer loaded successfully")
             except Exception as e:
                 LOG.warning(f"Could not load tokenizer: {e}")
@@ -555,15 +610,15 @@ class SabiYarnTrainer:
             self.model = SabiYarn(model_args)
             model_size_info = self.model.get_model_size()
             LOG.info(f"Model initialized from scratch: {model_size_info}")
+            LOG.info(f"Model: {self.model}")
             
             # Update W&B with actual model size
             if self.config.wandb_log and self.master_process:
                 wandb.config.update({"model_size": model_size_info}, allow_val_change=True)
             
         elif self.config.init_from == "resume":
-            # Load from checkpoint
-            ckpt_path = os.path.join(self.config.out_dir, "ckpt.pt")
-            checkpoint = torch.load(ckpt_path, map_location=self.config.device)
+            # Load from checkpoint (single-pass via cache)
+            checkpoint = self._get_resume_checkpoint()
             
             model_args = checkpoint["model_args"]
             self.model = SabiYarn(model_args)
@@ -574,7 +629,7 @@ class SabiYarnTrainer:
             
             LOG.info(f"Model resumed from checkpoint: {self.model.get_model_size()}")
             
-        self.model.to(self.config.device, dtype=self.config.dtype)
+        self.model.to(device=torch.device(self.config.device), dtype=self.ptdtype)
         
     def create_model_args(self) -> ModelArgs:
         """Create ModelArgs based on training configuration."""
@@ -647,9 +702,9 @@ class SabiYarnTrainer:
             mtp_share_embeddings=self.config.mtp_share_embeddings,
             
             # Layer sharing
-            layer_sharing=self.config.use_layer_sharing,
+            layer_sharing=self.config.layer_sharing,
             n_unique_layers=self.config.n_unique_layers,
-            layer_sharing_strategy = self.config.layer_sharing_strategy,
+            layer_sharing_strategy=self.config.layer_sharing_strategy,
             
             # Other features
             logic_network=self.config.use_logic_network,
@@ -696,9 +751,10 @@ class SabiYarnTrainer:
             
         # Load optimizer state if resuming
         if self.config.init_from == "resume":
-            ckpt_path = os.path.join(self.config.out_dir, "ckpt.pt")
-            checkpoint = torch.load(ckpt_path, map_location=self.config.device)
+            checkpoint = self._get_resume_checkpoint()
             self.optimizer.load_state_dict(checkpoint["optimizer"])
+            # Free after use to release memory
+            self._resume_checkpoint = None
             
         LOG.info(f"Optimizer initialized: {self.config.optimizer_type}")
         
@@ -817,9 +873,9 @@ class SabiYarnTrainer:
                         hidden_states,
                         raw_model.lm_head.weight,
                         targets,
-                        shift=True,
+                        shift=False,
                         ignore_index=-100,
-                        impl="torch_compile"
+                        # impl="cce"
                     )
                 else:
                     total_loss = F.cross_entropy(
@@ -837,9 +893,9 @@ class SabiYarnTrainer:
                     hidden_states,
                     raw_model.lm_head.weight,
                     targets,
-                    shift=True,
+                    shift=False,
                     ignore_index=-100,
-                    impl="torch_compile"
+                    # impl="torch_compile"
                 )
             else:
                 total_loss = F.cross_entropy(
@@ -887,8 +943,25 @@ class SabiYarnTrainer:
         """Generate sample text for monitoring training progress."""
         if self.tokenizer is None:
             return
-            
+        
+        input_ids = self.tokenizer.encode("The boy", return_tensors="pt").to(self.config.device)  
+        
         self.model.eval()
+        with torch.no_grad():
+            generated = self.model.generate(
+                input_ids,
+                max_new_tokens=self.config.generation_max_tokens,
+                use_multi_token=self.model.use_multi_token
+            )
+    
+        output_text = self.tokenizer.decode(generated[0].tolist(), skip_special_tokens=True)
+        
+        LOG.info("=" * 50)
+        LOG.info(f"Input: The boy")
+        LOG.info(f"Generated: {output_text}")
+        LOG.info("=" * 50)
+
+        # self.model.eval()
         try:
             with torch.no_grad():
                 generated = self.model.generate(
@@ -925,10 +998,20 @@ class SabiYarnTrainer:
             "config": self.config.__dict__,
         }
         
-        # Save main checkpoint
-        ckpt_path = os.path.join(self.config.out_dir, "ckpt.pt")
-        torch.save(checkpoint, ckpt_path)
-        LOG.info(f"Checkpoint saved to {ckpt_path}")
+        # Save in the run directory
+        os.makedirs(self.run_dir, exist_ok=True)
+        # Update a rolling 'ckpt.pt' and also an iter-stamped file for history
+        ckpt_latest = os.path.join(self.run_dir, "ckpt.pt")
+        ckpt_iter = os.path.join(self.run_dir, f"ckpt_{self.iter_num:07d}.pt")
+        torch.save(checkpoint, ckpt_latest)
+        torch.save(checkpoint, ckpt_iter)
+        # Update a simple pointer file in base out_dir for discovery
+        try:
+            with open(os.path.join(self.config.out_dir, "LATEST_RUN.txt"), "w") as fp:
+                fp.write(self.run_dir)
+        except Exception:
+            pass
+        LOG.info(f"Checkpoint saved to {ckpt_latest} and {ckpt_iter}")
         
         # Save MTP modules separately if available
         if hasattr(raw_model, 'multi_token_predictor') and raw_model.multi_token_predictor is not None:
@@ -940,7 +1023,7 @@ class SabiYarnTrainer:
                 "config": self.config.__dict__,
             }
             
-            mtp_ckpt_path = os.path.join(self.config.out_dir, "mtp_ckpt.pt")
+            mtp_ckpt_path = os.path.join(self.run_dir, "mtp_ckpt.pt")
             torch.save(mtp_checkpoint, mtp_ckpt_path)
             LOG.info(f"MTP module checkpoint saved to {mtp_ckpt_path}")
             
@@ -958,9 +1041,67 @@ class SabiYarnTrainer:
                 mtp_components['projection'] = mtp_module.projection.state_dict()
                 
             if mtp_components:
-                mtp_components_path = os.path.join(self.config.out_dir, "mtp_components.pt")
+                mtp_components_path = os.path.join(self.run_dir, "mtp_components.pt")
                 torch.save(mtp_components, mtp_components_path)
                 LOG.info(f"MTP components saved to {mtp_components_path}")
+
+    def setup_output_dirs(self):
+        """Create and register a unique run directory under out_dir and write metadata/pointers.
+
+        Naming: <YYYYmmdd_HHMMSS>_<attn>_<dim>d_<layers>L_<heads>H_<moe|dense>_<suffix>
+        """
+        # Ensure base exists
+        os.makedirs(self.config.out_dir, exist_ok=True)
+
+        if self.config.init_from == "resume":
+            # If an explicit resume dir is given, use it; else attempt to detect latest
+            if self.config.resume_run_dir:
+                self.run_dir = self.config.resume_run_dir
+            elif self.config.run_dir:
+                self.run_dir = self.config.run_dir
+            else:
+                # Try pointer file first
+                pointer = os.path.join(self.config.out_dir, "LATEST_RUN.txt")
+                run_dir = None
+                if os.path.exists(pointer):
+                    try:
+                        with open(pointer, "r") as fp:
+                            candidate = fp.read().strip()
+                            if candidate and os.path.isdir(candidate):
+                                run_dir = candidate
+                    except Exception:
+                        run_dir = None
+                if run_dir is None:
+                    # Pick most recent directory under out_dir
+                    subdirs = [d.path for d in os.scandir(self.config.out_dir) if d.is_dir()]
+                    if not subdirs:
+                        raise FileNotFoundError(f"No run directories found in {self.config.out_dir} to resume from")
+                    run_dir = max(subdirs, key=lambda p: os.path.getmtime(p))
+                self.run_dir = run_dir
+        else:
+            if self.config.run_dir:
+                self.run_dir = self.config.run_dir
+            else:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                attn = self.config.attention_type
+                moe_tag = "moe" if self.config.use_moe else "dense"
+                suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+                dir_name = f"{timestamp}_{attn}_{self.config.dim}d_{self.config.n_layers}L_{self.config.n_heads}H_{moe_tag}_{suffix}"
+                self.run_dir = os.path.join(self.config.out_dir, dir_name)
+            os.makedirs(self.run_dir, exist_ok=True)
+            # Write metadata for this run
+            metadata = {
+                "created_at": datetime.now().isoformat(),
+                "git_commit": self._get_git_commit(),
+                "config": self.config.__dict__,
+            }
+            try:
+                with open(os.path.join(self.run_dir, "metadata.json"), "w") as fp:
+                    json.dump(metadata, fp, indent=2)
+                with open(os.path.join(self.config.out_dir, "LATEST_RUN.txt"), "w") as fp:
+                    fp.write(self.run_dir)
+            except Exception:
+                pass
         
     def train(self):
         """Main training loop."""
@@ -1005,8 +1146,12 @@ class SabiYarnTrainer:
                 break
                 
             # Generate sample text occasionally
-            if (self.iter_num % self.config.display_model_output_iter == 0 and 
-                self.master_process and self.iter_num > 0):
+            if (
+                self.config.enable_generation_during_training
+                and self.iter_num % self.config.display_model_output_iter == 0
+                and self.master_process
+                and self.iter_num > 0
+            ):
                 self.generate_sample_text(X)
                 
             # Training step with gradient accumulation
