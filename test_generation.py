@@ -47,7 +47,7 @@ def test_generation(
     temperature: float = 0.8,
     top_k: int = 50,
     use_multi_token: bool = True,
-    run_dir: str = None,
+    run_dir: str = "/data/checkpoints/self_attention_test_1",
 ):
     """Generate text from the latest checkpoint on the Modal volume."""
     import os
@@ -56,7 +56,7 @@ def test_generation(
     import torch
     import torch.nn.functional as F
     from transformers import AutoTokenizer
-    
+
     os.chdir("/app")
     sys.path.insert(0, "/app")
 
@@ -74,7 +74,7 @@ def test_generation(
     print("🔍 Running generation from checkpoint")
 
     # Locate checkpoint within per-run structure
-    ckpt_base = "/data/checkpoints/self_attention_test_1"
+    ckpt_base = "/data/checkpoints"
     pointer_file = os.path.join(ckpt_base, "LATEST_RUN.txt")
     resolved_run_dir = None
     if run_dir and os.path.isdir(run_dir):
@@ -157,6 +157,13 @@ def test_generation(
     print("📝 Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained("Aletheia-ng/SabiYarn_test")
 
+    emb_vocab = int(model.tok_embeddings.weight.size(0))
+    if tokenizer.vocab_size != model_args.vocab_size or emb_vocab != model_args.vocab_size:
+        print(
+            f"⚠️ Vocab mismatch: tokenizer={tokenizer.vocab_size}, model_args={model_args.vocab_size}, embeddings={emb_vocab}.\n"
+            "   Ensure you are using the same tokenizer that was used for training."
+        )
+
     # Defaults
     if prompts is None:
         prompts = [
@@ -168,6 +175,14 @@ def test_generation(
     with torch.no_grad():
         for idx, prompt in enumerate(prompts):
             input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
+            # Fail fast if any token id exceeds embedding size
+            max_id = int(input_ids.max().item())
+            if max_id >= emb_vocab:
+                raise RuntimeError(
+                    f"Token id {max_id} >= embedding size {emb_vocab}.\n"
+                    f"Tokenizer vocab={tokenizer.vocab_size}, model_args.vocab={model_args.vocab_size}.\n"
+                    "Use the exact tokenizer from training or resize embeddings to match."
+                )
             # Truncate to model context if needed
             if input_ids.size(1) > model_args.max_seq_len:
                 input_ids = input_ids[:, -model_args.max_seq_len :]
