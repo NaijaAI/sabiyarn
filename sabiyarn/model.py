@@ -535,20 +535,21 @@ class TransformerBlock(nn.Module):
         Returns:
             torch.Tensor: Output tensor after applying attention and feedforward layers.
         """
-        if isinstance(self.attention, MLA):
-            # MLA handles normalization internally and has different signature
-            h = x + self.attention(x, start_pos, freqs_cis, mask)[0]  # Take output, ignore scores
-        else:
-            # Standard attention flow
-            x_norm = self.attention_norm(x)
-            attn_out = self.attention(x_norm, start_pos, freqs_cis, mask)
+        x_norm = self.attention_norm(x)
+        
+        # if isinstance(self.attention, MLA):
+        #     # MLA handles normalization internally and has different signature
+        #     attn_out = x + self.attention(x, start_pos, freqs_cis, mask)  # Take output, ignore scores
+        # else:
+        #     # Standard attention flow
+        attn_out = self.attention(x_norm, start_pos, freqs_cis, mask) # MLA also returns outputs without scores
             
-            if self.use_j_linear and self.linear_j is not None:
-                # TransformerBlockJ: attention + J linear
-                h = x + attn_out + self.linear_j(x_norm)
-            else:
-                # Standard TransformerBlock: just attention
-                h = x + attn_out
+        if self.use_j_linear and self.linear_j is not None:
+            # TransformerBlockJ: attention + J linear
+            h = x + attn_out + self.linear_j(x_norm)
+        else:
+            # Standard TransformerBlock: just attention
+            h = x + attn_out
 
         # Apply logic network if enabled
         if self.use_logic_network and self.logic_gate is not None:
@@ -556,6 +557,7 @@ class TransformerBlock(nn.Module):
 
         # Feed forward
         out = h + self.feed_forward(self.ffn_norm(h))
+        
         return out
 
 
