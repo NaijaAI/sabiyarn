@@ -894,14 +894,14 @@ class SabiYarnTrainer:
                     raw_model.lm_head.weight,
                     targets,
                     shift=False,
-                    ignore_index=-100,
+                    ignore_index=MASK,
                     # impl="torch_compile"
                 )
             else:
                 total_loss = F.cross_entropy(
                     logits.view(-1, logits.size(-1)),
                     targets.view(-1),
-                    ignore_index=-100
+                    ignore_index=MASK
                 )
                 
         return total_loss, logits if not self.model.use_multi_token else hidden_states
