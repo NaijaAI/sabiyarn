@@ -944,7 +944,8 @@ class SabiYarnTrainer:
         if self.tokenizer is None:
             return
         
-        input_ids = self.tokenizer.encode("The boy", return_tensors="pt").to(self.config.device)  
+        input_ids = self.tokenizer.encode("The boy is", return_tensors="pt").to(self.config.device)  
+        input_ids = input_ids[1:]
         
         self.model.eval()
         with torch.no_grad():
