@@ -874,14 +874,14 @@ class SabiYarnTrainer:
                         raw_model.lm_head.weight,
                         targets,
                         shift=False,
-                        ignore_index=-100,
+                        ignore_index=MASK,
                         # impl="cce"
                     )
                 else:
                     total_loss = F.cross_entropy(
                         logits.view(-1, logits.size(-1)),
                         targets.view(-1),
-                        ignore_index=-100
+                        ignore_index=MASK
                     )
         else:
             # Standard training without MTP
