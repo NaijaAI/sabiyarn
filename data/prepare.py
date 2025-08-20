@@ -64,6 +64,7 @@ def calculate_test_size(dataset_length):
 def process_example(example, tokenizer, eot_token):
     """Tokenizes a single example and adds end_of_text tokens."""
     ids = tokenizer.encode(example["text"])
+    ids = ids[1:] if ids and ids[0] == tokenizer.bos_token_id else ids
     ids.extend([eot_token, eot_token])
     return {"ids": ids, "len": len(ids)}
 
