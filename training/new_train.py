@@ -53,6 +53,11 @@ from training.training_attention_mask import create_causal_mask, create_causal_m
 from transformers import AutoTokenizer
 from bitsandbytes import optim as bnb_optim
 
+try:
+    from torch.cuda.amp import GradScaler
+except ImportError:
+    from torch.amp import GradScaler  
+    
 CUDA_LAUNCH_BLOCKING=1
 try:
     import psutil
@@ -64,20 +69,32 @@ except ImportError:
 
 LOG = structlog.stdlib.get_logger()
 
+def clear_cuda():
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()   # also reclaims memory from inter-process communication
+        print("✅ CUDA cache cleared")
+    else:
+        print("⚠️ CUDA is not available on this device")
+
+# Example usage
+clear_cuda()
+
 @dataclass
 class TrainingConfig:
     # Model Architecture
-    attention_type: str = "MLA"  # "self_attention", "differential_attention", "MLA"
-    dim: int = 2048
-    n_layers: int = 20
-    n_heads: int = 16
-    n_kv_heads: Optional[int] = 8
+    attention_type: str = "self_attention" #"self_attention" , "differential_attention", "MLA"
+    dim: int = 256
+    n_layers: int = 10
+    n_heads: int = 8
+    n_kv_heads: Optional[int] = 4
     vocab_size: int = 64000
     max_seq_len: int = 1024
-    max_batch_size: int = 32
+    max_batch_size: int = 14 #8
+    train_batch_size: int = 14 #8
     
     # Attention-specific configs
-    use_mla: bool = True
+    use_mla: bool = False
     use_differential_attention: bool = False
     
     # MLA Configuration
@@ -88,7 +105,7 @@ class TrainingConfig:
     mla_qk_nope_head_dim: int = 128
     
     # MoE Configuration (only with MLA)
-    use_moe: bool = True
+    use_moe: bool = False
     n_routed_experts: int = 3
     n_activated_experts: int = 2
     moe_inter_dim: int = 1024
@@ -98,7 +115,7 @@ class TrainingConfig:
     moe_aux_loss_weight: float = 0.001  # Weight for MoE sequence-wise auxiliary loss
     
     # Multi-Token Prediction (only with MLA)
-    use_multi_token_prediction: bool = True
+    use_multi_token_prediction: bool = False
     num_prediction_tokens: int = 2
     mtp_loss_weight: float = 1.0  
     mtp_share_embeddings: bool = True
@@ -107,7 +124,7 @@ class TrainingConfig:
     # Layer Sharing (MobileLLM-style)
     layer_sharing_strategy: str = "immediate"
     layer_sharing: bool = True
-    n_unique_layers: Optional[int] = 10
+    n_unique_layers: Optional[int] = 5
     layer_sharing_strategy  = 'immediate'
     
     # Other model features
@@ -118,8 +135,8 @@ class TrainingConfig:
     init_std: float = 0.006
     
     # Training Configuration
-    train_batch_size: int = 24
-    gradient_accumulation_steps: int = 40  # 5 * 8
+    
+    gradient_accumulation_steps: int = 10   # 5 * 8
     learning_rate: float = 3e-4
     max_iters: int = 600000
     weight_decay: float = 1e-1
@@ -129,9 +146,9 @@ class TrainingConfig:
     
     # Learning rate schedule
     decay_lr: bool = True
-    warmup_iters: int = 1500
+    warmup_iters: int = 100 #1500
     lr_decay_iters: int = 600000
-    min_lr: float = 6e-5
+    min_lr: float = 1e-5 # 6e-5
     
     # Optimizer
     optimizer_type: str = "adamw"  # "adam", "adamw", "sgd", "adam8bit"
@@ -152,11 +169,11 @@ class TrainingConfig:
     out_dir: str = "out"  # Base directory that will contain per-run subfolders
     run_dir: Optional[str] = None  # Full path to the current run directory (auto-created if None)
     resume_run_dir: Optional[str] = None  # When resuming, explicitly set the run folder
-    eval_interval: int = 2000
-    log_interval: int = 100
-    eval_iters: int = 200
+    eval_interval: int = 64
+    log_interval: int = 16
+    eval_iters: int = 100
     eval_only: bool = False
-    always_save_checkpoint: bool = True
+    always_save_checkpoint: bool = False
     init_from: str = "scratch"  # "scratch" or "resume"
     
     # WandB logging
@@ -174,9 +191,9 @@ class TrainingConfig:
     monitor_interval: int = 50  # Log detailed metrics every N steps
     
     # Generation testing
-    display_model_output_iter: int = 768
-    enable_generation_during_training: bool = False
-    generation_max_tokens: int = 100
+    display_model_output_iter: int = 128
+    enable_generation_during_training: bool = True
+    generation_max_tokens: int = 80
     
     # System
     device: str = "cuda"
@@ -189,7 +206,14 @@ class TrainingConfig:
 
 class SabiYarnTrainer:   
     def __init__(self, config: TrainingConfig):
+        self.local_iter_num = 0
+        self.running_mfu = -1.0
+        self.step_start_time = time.time()
+        self.iter_training_limit = 3000
+        self.iterate_from_start = True
         self.config = config
+        self.lr_manually_reduced= False
+        
         self.setup_environment()
         self.setup_distributed()
         self.setup_output_dirs()
@@ -206,9 +230,7 @@ class SabiYarnTrainer:
         if self.config.init_from != "resume":
             self.iter_num = 0
             self.best_val_loss = 1e9
-        self.local_iter_num = 0
-        self.running_mfu = -1.0
-        self.step_start_time = time.time()
+       
         
     def setup_environment(self):
         """Setup environment variables and device configuration."""
@@ -235,7 +257,7 @@ class SabiYarnTrainer:
         )
         
         # Initialize gradient scaler
-        self.scaler = torch.amp.GradScaler('cuda',enabled=(self.config.dtype == "float16"))
+        self.scaler = GradScaler('cuda',enabled=(self.config.dtype == "float16"))
         
     def setup_distributed(self):
         """Setup distributed training if available."""
@@ -323,11 +345,12 @@ class SabiYarnTrainer:
         """Check W&B authentication and provide helpful guidance."""
         try:
             # Try to get API key from various sources
-            api_key = (
-                os.getenv("WANDB_API_KEY") or 
-                wandb.api.api_key or
-                None
-            )
+            api_key = "3d4f49c65c423034b92482c50338953c67f62254" 
+            # (
+            #     os.getenv("WANDB_API_KEY") or 
+            #     wandb.api.api_key or
+            #     None
+            # )
             
             if not api_key:
                 LOG.warning("⚠️ W&B API key not found!")
@@ -622,9 +645,9 @@ class SabiYarnTrainer:
             
             model_args = checkpoint["model_args"]
             self.model = SabiYarn(model_args)
-            self.model.load_state_dict(checkpoint["model"])
+            self.model.load_state_dict(checkpoint["model"], strict=False)
             
-            self.iter_num = checkpoint["iter_num"]
+            self.iter_num = checkpoint["iter_num"] if not self.iterate_from_start else 0
             self.best_val_loss = checkpoint["best_val_loss"]
             
             LOG.info(f"Model resumed from checkpoint: {self.model.get_model_size()}")
@@ -716,7 +739,10 @@ class SabiYarnTrainer:
             # Distributed training (auto-detected)
             auto_detect_distributed=self.config.auto_detect_distributed,
         )
-        
+
+    def count_non_masked_tokens(self, tensor: torch.Tensor, mask_val: int = -100) -> int:
+        return (tensor != mask_val).sum().item()
+
     def setup_optimizer(self):
         """Setup optimizer based on configuration."""
         if self.config.optimizer_type == "adam":
@@ -800,6 +826,13 @@ class SabiYarnTrainer:
         else:
             x = x.to(self.config.device)
             y = y.to(self.config.device)
+
+        non_masked_tokens =  self.count_non_masked_tokens(y, MASK)
+        
+        if non_masked_tokens <= 10:
+            LOG.info(f"Number of Non-Masked Tokens: {non_masked_token}")
+        if torch.isnan(y).any():
+            LOG.info("Nan values detected in labels")
             
         return x, y
         
@@ -943,26 +976,7 @@ class SabiYarnTrainer:
         """Generate sample text for monitoring training progress."""
         if self.tokenizer is None:
             return
-        
-        input_ids = self.tokenizer.encode("The boy is", return_tensors="pt").to(self.config.device)  
-        input_ids = input_ids[1:]
-        
-        self.model.eval()
-        with torch.no_grad():
-            generated = self.model.generate(
-                input_ids,
-                max_new_tokens=self.config.generation_max_tokens,
-                use_multi_token=self.model.use_multi_token
-            )
-    
-        output_text = self.tokenizer.decode(generated[0].tolist(), skip_special_tokens=True)
-        
-        LOG.info("=" * 50)
-        LOG.info(f"Input: The boy")
-        LOG.info(f"Generated: {output_text}")
-        LOG.info("=" * 50)
-
-        # self.model.eval()
+            
         try:
             with torch.no_grad():
                 generated = self.model.generate(
@@ -1104,6 +1118,88 @@ class SabiYarnTrainer:
             except Exception:
                 pass
         
+
+    def monitor_and_control_gradients(self, model, optimizer, step, old_lr,
+                                  clip_value=1e2, tiny_value=1e-8,
+                                  lr_decay_factor=0.5):
+        """
+        Monitors gradients and takes action if exploding/vanishing gradients are detected.
+    
+        Args:
+            model: torch.nn.Module
+            optimizer: torch.optim.Optimizer
+            step: current training step (int)
+            clip_value: threshold for exploding gradients (absolute value)
+            tiny_value: threshold for vanishing gradients (mean absolute value)
+            lr_decay_factor: factor to reduce LR if exploding gradients are detected
+            grad_clip_norm: max norm to clip gradients
+        """
+        exploding_detected = False
+        vanishing_detected = False
+        
+        grad_report = []
+        for name, param in model.named_parameters():
+            if param.grad is None:
+                continue
+
+            grad_min = param.grad.data.min().item()
+            grad_max = param.grad.data.max().item()
+            grad_mean = param.grad.data.mean().item()
+            grad_abs_mean = param.grad.data.abs().mean().item()
+    
+            grad_report.append((name, grad_min, grad_max, grad_mean, grad_abs_mean))
+    
+            # Exploding gradient detection
+            if abs(grad_min) > clip_value or abs(grad_max) > clip_value:
+                LOG.info(f"[Step {step}] ⚠️ Exploding gradient in `{name}` "
+                      f"(min={grad_min:.2e}, max={grad_max:.2e})")
+                exploding_detected = True
+    
+            # Vanishing gradient detection
+            if grad_abs_mean < tiny_value:
+                LOG.info(f"[Step {step}] ⚠️ Vanishing gradient in `{name}` "
+                      f"(abs mean={grad_abs_mean:.2e}), (min={grad_min:.2e})")
+                vanishing_detected = True
+
+        # Summary statistics for whole model
+        global_min = min([g[1] for g in grad_report], default=0)
+        global_max = max([g[2] for g in grad_report], default=0)
+        # print(f"[Step {step}] Gradient summary: min={global_min:.4e}, max={global_max:.4e}")
+        
+        # Reduce LR if exploding gradients
+        if exploding_detected:            
+            for pg in optimizer.param_groups:
+                new_lr = max(old_lr * lr_decay_factor, 1e-5)  # don’t let it hit zero
+                pg['lr'] = new_lr
+                LOG.info(f"[Step {step}] 🚨 Learning rate reduced from {old_lr:.3e} to {new_lr:.3e}")
+            self.lr_manually_reduced = True
+            return new_lr
+               
+        return old_lr #exploding_detected, vanishing_detected
+
+    def safe_optimizer_step(self): #, exploding_detected: bool = False):
+        """
+        Performs a safe optimizer step with AMP scaling and gradient clipping.
+        """
+        # if exploding_detected:
+        #     print("⏭️  Skipping optimizer step due to exploding gradients")
+        #     # Still update scaler to keep AMP scale factor stable
+        #     self.scaler.update()
+        #     self.optimizer.zero_grad(set_to_none=True)
+        #     return
+    
+        # Unscale gradients before clipping
+        if self.config.grad_clip != 0.0:
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
+    
+        # Normal optimizer step
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+        self.optimizer.zero_grad(set_to_none=True)
+        return
+
+        
     def train(self):
         """Main training loop."""
         LOG.info("Starting training...")
@@ -1113,9 +1209,13 @@ class SabiYarnTrainer:
         
         while True:
             # Update learning rate
-            lr = self.get_lr(self.iter_num) if self.config.decay_lr else self.config.learning_rate
-            for param_group in self.optimizer.param_groups:
-                param_group["lr"] = lr
+            if self.lr_manually_reduced:
+                continue
+            else:
+                lr = self.get_lr(self.iter_num) if self.config.decay_lr else self.config.learning_rate
+                for param_group in self.optimizer.param_groups:
+                    param_group["lr"] = lr
+                self.lr_manually_reduce= False
                 
             # Evaluation and checkpointing
             if self.iter_num % self.config.eval_interval == 0 and self.master_process:
@@ -1154,7 +1254,8 @@ class SabiYarnTrainer:
                 and self.iter_num > 0
             ):
                 self.generate_sample_text(X)
-                
+
+           
             # Training step with gradient accumulation
             for micro_step in range(self.config.gradient_accumulation_steps):
                 if self.ddp:
@@ -1164,6 +1265,7 @@ class SabiYarnTrainer:
                     
                 with self.ctx:
                     loss, _ = self.compute_loss(X, Y)
+                    # LOG.info(f"batch loss: {loss:.2f}")
                     loss = loss / self.config.gradient_accumulation_steps
                     
                 # Get next batch while GPU is busy
@@ -1171,15 +1273,18 @@ class SabiYarnTrainer:
                 
                 # Backward pass
                 self.scaler.scale(loss).backward()
+                lr = self.monitor_and_control_gradients(self.model, self.optimizer, self.iter_num, lr, clip_value=1e2, tiny_value=1e-8, lr_decay_factor=0.5)
                 
             # Gradient clipping and optimizer step
-            if self.config.grad_clip != 0.0:
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
+            self.safe_optimizer_step()
+            
+            # if self.config.grad_clip != 0.0:
+            #     self.scaler.unscale_(self.optimizer)
+            #     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
                 
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-            self.optimizer.zero_grad(set_to_none=True)
+            # self.scaler.step(self.optimizer)
+            # self.scaler.update()
+            # self.optimizer.zero_grad(set_to_none=True)
             
             # Timing and logging
             t1 = time.time()
@@ -1188,7 +1293,7 @@ class SabiYarnTrainer:
             
             if self.iter_num % self.config.log_interval == 0 and self.master_process:
                 lossf = loss.item() * self.config.gradient_accumulation_steps
-                LOG.info(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms")
+                LOG.info(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, learning rate {lr}")
                 
                 # Log advanced metrics
                 self.log_advanced_metrics(loss * self.config.gradient_accumulation_steps, self.model, self.optimizer)
@@ -1197,7 +1302,7 @@ class SabiYarnTrainer:
             self.local_iter_num += 1
             
             # Termination condition
-            if self.iter_num > self.config.max_iters:
+            if (self.iter_num > self.config.max_iters) or (self.iter_num >= self.iter_training_limit):
                 break
                 
         if self.ddp:
