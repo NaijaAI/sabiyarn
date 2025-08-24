@@ -48,7 +48,6 @@ from cut_cross_entropy import linear_cross_entropy
 from training.utils import *
 from training.constant_tokens import MASK
 from training.training_attention_mask import create_causal_mask, create_causal_mask_optimized
-from training.training_attention_mask import create_causal_mask, create_causal_mask_optimized
 
 from transformers import AutoTokenizer
 from bitsandbytes import optim as bnb_optim
