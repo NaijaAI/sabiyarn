@@ -4,6 +4,8 @@ Modal GPU training wrapper for SabiYarn models.
 """
 
 import modal
+from numpy._core.numeric import True_
+
 
 # Create Modal app with enhanced image for training
 image = (
@@ -43,16 +45,16 @@ volume = modal.Volume.from_name("sabiyarn-data", create_if_missing=True)
 def train_sabiyarn(
     # Model configuration
     attention_type: str = "self_attention",
-    dim: int = 2048,
-    n_layers: int = 20,
+    dim: int = 1024,
+    n_layers: int = 16,
     n_heads: int = 16,
     n_kv_heads: int = 8,
     vocab_size: int = 64000,
     max_seq_len: int = 1024,
-    max_batch_size: int = 32,
+    max_batch_size: int = 16,
     
     # MoE configuration
-    use_moe: bool = False,
+    use_moe: bool = True,
     n_routed_experts: int = 16,
     n_activated_experts: int = 8,
     moe_inter_dim: int = 2048,
@@ -62,17 +64,17 @@ def train_sabiyarn(
     moe_aux_loss_weight: float = 0.001,
     
     # Multi-Token Prediction
-    use_multi_token_prediction: bool = True,
+    use_multi_token_prediction: bool = False,
     num_prediction_tokens: int = 2,
     mtp_only_training: bool = True,
     
     # Layer Sharing
     layer_sharing: bool = True,
     layer_sharing_strategy: str = "immediate",
-    n_unique_layers: int = 10,
+    n_unique_layers: int = 8,
     
     # Training configuration
-    train_batch_size: int = 16,
+    train_batch_size: int = 10,
     gradient_accumulation_steps: int = 5,
     learning_rate: float = 3e-4,
     max_iters: int = 60000,
@@ -89,7 +91,7 @@ def train_sabiyarn(
     run_dir: str | None = None,
 
     init_from: str = "scratch",
-    use_cut_cross_entropy=False,
+    use_cut_cross_entropy=True,
     
     # W&B configuration
     wandb_project: str = "sabiyarn-modal-training",
@@ -113,12 +115,12 @@ def train_sabiyarn(
     sys.path.insert(0, "/app")
     
     # Import training modules
-    from training.new_train import TrainingConfig, SabiYarnTrainer
+    from training.new_train import TrainingConfig, SabiYarnTrainer, AttentionType
     
     # Create configuration
     config = TrainingConfig(
         # Model Architecture
-        attention_type=attention_type,
+        attention_type=AttentionType.MLA,
         dim=dim,
         n_layers=n_layers,
         n_heads=n_heads,
@@ -281,9 +283,8 @@ def main():
     # prepare_data.remote()
 
     result = train_sabiyarn.remote(
-        attention_type="self_attention",
-        dim=512,
-        n_layers=14,
+        dim=1024,
+        n_layers=24,
         n_heads=8,
         n_kv_heads=4,
         use_moe=False,
@@ -295,13 +296,13 @@ def main():
         use_cut_cross_entropy=True,
         layer_sharing=True,
         layer_sharing_strategy="immediate",
-        n_unique_layers=7,
-        max_iters=10000,  # Shorter for testing
+        n_unique_layers=12,
+        max_iters=3000,  # Shorter for testing
         warmup_iters=300,
         lr_decay_iters=1000,
-        wandb_run_name="self_attention_test_1",
+        wandb_run_name="mla_cce_1",
         init_from="scratch",
-        run_dir="/data/checkpoints/self_attention_test_1",
+        run_dir="/data/checkpoints/mla_cce_1",
     )
     
     if result:

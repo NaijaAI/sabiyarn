@@ -1,7 +1,7 @@
 import torch
 from transformers import AutoTokenizer
 import numpy as np
-from constant_tokens import *
+from training.constant_tokens import *
 
 
 def mask_long_sequences(tensor, target_value=220, mask_value=-100, min_length=2):

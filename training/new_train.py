@@ -82,7 +82,7 @@ clear_cuda()
 @dataclass
 class TrainingConfig:
     # Model Architecture
-    attention_type: str = "self_attention" #"self_attention" , "differential_attention", "MLA"
+    attention_type: AttentionType = AttentionType.MLA #"self_attention" , "differential_attention", "MLA"
     dim: int = 256
     n_layers: int = 10
     n_heads: int = 8
@@ -93,7 +93,7 @@ class TrainingConfig:
     train_batch_size: int = 14 #8
     
     # Attention-specific configs
-    use_mla: bool = False
+    use_mla: bool = True
     use_differential_attention: bool = False
     
     # MLA Configuration
@@ -660,7 +660,7 @@ class SabiYarnTrainer:
         mla_config = None
         diff_attn_args = None
         
-        if self.config.attention_type == "MLA":
+        if self.config.attention_type ==  AttentionType.MLA:
             mla_config = MLAConfig(
                 hidden_size=self.config.dim,
                 num_heads=self.config.n_heads,
@@ -681,7 +681,7 @@ class SabiYarnTrainer:
                 mscale=1.0
             )
             
-        elif self.config.attention_type == "differential_attention":
+        elif self.config.attention_type == AttentionType.DIFFERENTIAL_ATTENTION:
             diff_attn_args = DiffAttnArgs(
                 depth=0,  # Will be set per layer
                 max_batch_size=self.config.max_batch_size,
@@ -703,7 +703,7 @@ class SabiYarnTrainer:
             max_seq_len=self.config.max_seq_len,
             
             # Attention configuration
-            attention_type=getattr(AttentionType, self.config.attention_type.upper()),
+            attention_type=self.config.attention_type,
             mla_config=mla_config,
             diff_attn_args=diff_attn_args,
             

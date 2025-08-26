@@ -7,7 +7,7 @@ MASK=-100
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root =  os.path.dirname(current_dir)
 
-config_path = os.path.join(project_root, "config", "config.yaml")
+config_path = os.path.join("config", "config.yaml")
 config = OmegaConf.load(config_path)
 
 tokenizer = AutoTokenizer.from_pretrained(config.model.tokenizer.name)

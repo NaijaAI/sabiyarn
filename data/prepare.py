@@ -14,7 +14,6 @@ import re
 from huggingface_hub import list_repo_files, hf_hub_download
 import json
 from training import constant_tokens
-from training import constant_tokens
 import structlog
 from dotenv import load_dotenv
 load_dotenv()
@@ -27,7 +26,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "true"
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root =  os.path.dirname(current_dir)
 
-config_path = os.path.join(project_root, "config", "config.yaml")
+config_path = os.path.join("config", "config.yaml")
 config = OmegaConf.load(config_path)
 
 READ_TOKEN = os.getenv("HF_API_KEY")
