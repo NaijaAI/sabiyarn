@@ -143,7 +143,7 @@ class GroupedQueryAttention(nn.Module):
         self.wv = nn.Linear(
             self.dim,
             self.n_kv_heads * self.head_dim,
-            bias=-False
+            bias=False
         )
         if self.use_kv_cache:
             self.cache_k = torch.zeros(

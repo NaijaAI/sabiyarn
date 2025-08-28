@@ -214,7 +214,7 @@ def run_tests_on_gpu():
                 max_batch_size=32
             )
             config = ModelArgs(
-                dim=256,
+                dim=384,
                 n_layers=2,
                 n_heads=8,
                 vocab_size=1000,
