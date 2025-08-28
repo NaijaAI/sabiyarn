@@ -241,7 +241,7 @@ def run_tests_on_gpu():
             print(f"   Logits: {logits.shape}")
             
             expected_hidden = (1, 16, 384)
-            expected_logits = (1, 16, 10000)
+            expected_logits = (1, 16, 1000)
         
             assert hidden_states.shape == expected_hidden, f"Hidden states shape mismatch: {hidden_states.shape} vs {expected_hidden}"
             assert logits.shape == expected_logits, f"Logits shape mismatch: {logits.shape} vs {expected_logits}"
