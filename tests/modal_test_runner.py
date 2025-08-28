@@ -12,6 +12,8 @@ import modal
 import sys
 import os
 
+from sabiyarn.grouped_query_attention import GQAArgs
+
 # Add the project root to path so we can import sabiyarn as a package
 project_root = os.path.join(os.path.dirname(__file__), '..')
 sys.path.insert(0, project_root)
@@ -196,6 +198,59 @@ def run_tests_on_gpu():
             
         except Exception as e:
             print(f"❌ Differential Attention model test failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def test_gqa_model():
+        """ Test model initialization with Grouped Query Attention"""
+        print("\n🧪 Testing Grouped Query Attention with model.....")
+        try:
+            gqa_config = GQAArgs(
+                dim=384,
+                n_kv_heads=4,
+                n_heads=8,
+                max_seq_len=2048,
+                max_batch_size=32
+            )
+            config = ModelArgs(
+                dim=256,
+                n_layers=2,
+                n_heads=8,
+                vocab_size=1000,
+                max_batch_size=32,
+                max_seq_len=32,
+                attention_type=AttentionType.GQA,
+                gqa_config=gqa_config
+            )
+            model = SabiYarn(config)
+            print(f"✅ GQA model created: {model.get_model_size()}")
+            
+            # Test forward pass with proper dtype handling
+            tokens = torch.randint(0, 1000, (1, 16))
+            
+            # Set model to eval mode and ensure consistent dtype
+            model.eval()
+            with torch.no_grad():
+                # Convert model to float32 to avoid dtype mismatch
+                model = model.float()
+                hidden_states, logits = model(tokens, start_pos=0)
+            
+            print(f"   Input: {tokens.shape}")
+            print(f"   Hidden states: {hidden_states.shape}")
+            print(f"   Logits: {logits.shape}")
+            
+            expected_hidden = (1, 16, 384)
+            expected_logits = (1, 16, 10000)
+        
+            assert hidden_states.shape == expected_hidden, f"Hidden states shape mismatch: {hidden_states.shape} vs {expected_hidden}"
+            assert logits.shape == expected_logits, f"Logits shape mismatch: {logits.shape} vs {expected_logits}"
+            
+            print("✅ GQA model test passed!")
+            return True
+            
+        except Exception as e:
+            print(f"❌ GQA model test failed: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -502,6 +557,7 @@ def run_tests_on_gpu():
     test_functions = [
         ("Cut Cross Entropy", test_cut_cross_entropy),
         ("MHA Model Initialization", test_mha_model_initialization),
+        ("GQA Model initialization", test_gqa_model),
         ("Differential Attention Model", test_differential_attention_model),
         ("MLA Model", test_mla_model),
         ("MLA + MoE Model", test_mla_with_moe),
