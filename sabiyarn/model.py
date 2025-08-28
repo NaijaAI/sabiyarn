@@ -45,7 +45,8 @@ def _validate_attention_config(args: 'ModelArgs') -> None:
             raise ValueError(f"diff_attn_args.embed_dim ({args.diff_attn_args.embed_dim}) must match args.dim ({args.dim})")
     
     elif args.attention_type == AttentionType.GQA:
-        raise ValueError("GQAArgs must be provided for Grouped Query Attention")
+        if args.gqa_config is None:
+            raise ValueError("GQAArgs must be provided for Grouped Query Attention")
     elif args.attention_type == AttentionType.MLA:
         if args.mla_config is None:
             raise ValueError("mla_config must be provided for MLA")
