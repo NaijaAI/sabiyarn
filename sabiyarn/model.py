@@ -690,7 +690,9 @@ class SabiYarn(nn.Module):
 
         elif params.attention_type == AttentionType.GQA:
             from .grouped_query_attention import precompute_freqs_cis
-            self.freqs_cis = precompute_freqs_cis(self.params.gqa_config.dim, self.params.max_seq_len)
+            self.freqs_cis = precompute_freqs_cis(self.params.gqa_config.dim // self.params.gqa_config.n_heads,
+            self.params.max_seq_len*2)
+
         elif params.attention_type == AttentionType.MLA:
             # MLA precomputes its own frequencies internally
             from .MLA import precompute_freqs_cis

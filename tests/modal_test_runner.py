@@ -210,7 +210,7 @@ def run_tests_on_gpu():
                 dim=384,
                 n_kv_heads=4,
                 n_heads=8,
-                max_seq_len=2048,
+                max_seq_len=32,
                 max_batch_size=32
             )
             config = ModelArgs(

@@ -202,7 +202,7 @@ class GroupedQueryAttention(nn.Module):
             self.cache_v[:bsz, start_pos: start_pos + seq_len] = xv
 
             xk = self.cache_k[:bsz, :start_pos+seq_len]
-            xv = self.cache_l[:bsz, :start_pos+seq_len]
+            xv = self.cache_v[:bsz, :start_pos+seq_len]
         
         xk = repeat_kv(xk, self.n_rep)
         xv = repeat_kv(xv, self.n_rep)
