@@ -2,7 +2,7 @@ name: Test Model
 
 on:
   push:
-    branches: GPA
+    branches: GQA
   pull_request:
     branches: main
 env:
