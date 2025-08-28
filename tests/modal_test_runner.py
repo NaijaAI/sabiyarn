@@ -21,7 +21,7 @@ sys.path.insert(0, project_root)
 image = (
     modal.Image.debian_slim(python_version="3.10")
     .pip_install_from_requirements("requirements.txt")
-    .copy_local_dir(".", "/root/app")
+    .add_local_dir(".", "/root/app")
 )
 
 app = modal.App("sabiyarn-tests")
