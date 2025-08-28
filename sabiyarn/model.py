@@ -552,7 +552,9 @@ class TransformerBlock(nn.Module):
         #     attn_out = x + self.attention(x, start_pos, freqs_cis, mask)  # Take output, ignore scores
         # else:
         #     # Standard attention flow
-        attn_out = self.attention(x_norm, start_pos, freqs_cis, mask) # MLA also returns outputs without scores
+        attn_out = self.attention(x_norm, start_pos, freqs_cis, mask)
+        
+        print(attn_out) # MLA also returns outputs without scores
             
         if self.use_j_linear and self.linear_j is not None:
             # TransformerBlockJ: attention + J linear
