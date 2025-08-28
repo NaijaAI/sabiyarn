@@ -223,7 +223,7 @@ class GroupedQueryAttention(nn.Module):
         scores = F.softmax(scores.float(), dim=-1).type_as(xq)
         output = torch.matmul(scores, xv)
         output = output.transpose(1,2).contiguous().view(bsz, seq_len, -1)
-        return self.ffn(output)
+        return self.wo(output)
 
 
 
