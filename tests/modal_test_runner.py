@@ -12,7 +12,6 @@ import modal
 import sys
 import os
 
-from sabiyarn.grouped_query_attention import GQAArgs
 
 # Add the project root to path so we can import sabiyarn as a package
 project_root = os.path.join(os.path.dirname(__file__), '..')
@@ -42,6 +41,7 @@ def run_tests_on_gpu():
     sys.path.insert(0, project_root)
     
     # Now import the GPU-dependent modules (this happens on GPU)
+    from sabiyarn.grouped_query_attention import GQAArgs
     from sabiyarn.model import ModelArgs, SabiYarn, AttentionType
     from sabiyarn.MLA import MLAConfig
     from sabiyarn.differential_attention import DiffAttnArgs
