@@ -44,7 +44,7 @@ volume = modal.Volume.from_name("sabiyarn-data", create_if_missing=True)
 )
 def train_sabiyarn(
     # Model configuration
-    attention_type: str = "self_attention",
+    attention_type: str = "self-attention",
     dim: int = 1024,
     n_layers: int = 16,
     n_heads: int = 16,
@@ -80,7 +80,7 @@ def train_sabiyarn(
     max_iters: int = 60000,
     weight_decay: float = 1e-1,
     grad_clip: float = 1.0,
-    warmup_iters: int = 300,
+    warmup_iters: int = 150,
     lr_decay_iters: int = 1000,
     
     # Data and checkpointing
@@ -94,8 +94,8 @@ def train_sabiyarn(
     use_cut_cross_entropy=True,
     
     # W&B configuration
-    wandb_project: str = "sabiyarn-modal-training",
-    wandb_run_name: str = "modal_training",
+    wandb_project: str = "sabiyarn-tests",
+    wandb_run_name: str = "MHA+CCE",
     
     # System
     dtype: str = "bfloat16",
@@ -120,7 +120,7 @@ def train_sabiyarn(
     # Create configuration
     config = TrainingConfig(
         # Model Architecture
-        attention_type=AttentionType.MLA,
+        attention_type=AttentionType.SELF_ATTENTION,
         dim=dim,
         n_layers=n_layers,
         n_heads=n_heads,
@@ -300,9 +300,9 @@ def main():
         max_iters=3000,  # Shorter for testing
         warmup_iters=300,
         lr_decay_iters=1000,
-        wandb_run_name="mla_cce_1",
+        wandb_run_name="moe_cce",
         init_from="scratch",
-        run_dir="/data/checkpoints/mla_cce_1",
+        run_dir="/data/checkpoints/moe_cce_1",
     )
     
     if result:

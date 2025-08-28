@@ -13,12 +13,14 @@ from .memory_reasoning import LogicNetwork
 from .differential_attention import DiffAttention, DiffAttnArgs
 from .MLA import MLA, MLAConfig, ColumnParallelLinear, RowParallelLinear, linear
 from .MHA import SelfAttention, SelfAttnArgs, precompute_freqs_cis
+from .grouped_query_attention import GroupedQueryAttention, GQAArgs
 
 
 class AttentionType(str, Enum):
     SELF_ATTENTION = "self_attention"
     DIFFERENTIAL_ATTENTION = "differential_attention"
     MLA = "MLA"
+    GQA = "GQA"
 
 class LayerSharingStrategy(Enum):
     ALL_OVER = "repeat_all_over"
@@ -41,7 +43,9 @@ def _validate_attention_config(args: 'ModelArgs') -> None:
         # Validate compatibility
         if args.diff_attn_args.embed_dim != args.dim:
             raise ValueError(f"diff_attn_args.embed_dim ({args.diff_attn_args.embed_dim}) must match args.dim ({args.dim})")
-            
+    
+    elif args.attention_type == AttentionType.GQA:
+        raise ValueError("GQAArgs must be provided for Grouped Query Attention")
     elif args.attention_type == AttentionType.MLA:
         if args.mla_config is None:
             raise ValueError("mla_config must be provided for MLA")
@@ -154,6 +158,10 @@ def _create_attention(layer_id: int, args: 'ModelArgs') -> nn.Module:
             raise ValueError("mla_config must be provided for MLA attention type")
         
         return MLA(args.mla_config)
+    elif args.attention_type == AttentionType.GQA:
+        if args.gqa_config is None:
+            raise ValueError("gqa_config must be provided for Grouped Query Attention")
+        return GroupedQueryAttention(args.gqa_config)
     
     else:  # Default to SELF_ATTENTION
         standard_args = SelfAttnArgs(
@@ -197,6 +205,7 @@ class ModelArgs:
     attention_type: str = AttentionType.SELF_ATTENTION
     diff_attn_args: Optional[DiffAttnArgs] = None
     mla_config: Optional[MLAConfig] = None
+    gqa_config: Optional[GQAArgs] = None
     
     # Distributed training configuration
     auto_detect_distributed: bool = True
@@ -564,7 +573,7 @@ class TransformerBlock(nn.Module):
 class SabiYarn(nn.Module):
     def __init__(self, params: ModelArgs):
         """
-        Initialize a Transformer model.
+        Initialize the SabiYarn model.
 
         Args:
             params (ModelArgs): Model configuration parameters.
@@ -676,8 +685,11 @@ class SabiYarn(nn.Module):
                 self.params.diff_attn_args.embed_dim  # type: ignore
                 // self.params.diff_attn_args.n_heads  # type: ignore
                 // 2,
-                self.params.max_seq_len * 2,
-            )
+                self.params.max_seq_len * 2,)
+
+        elif params.attention_type == AttentionType.GQA:
+            from .grouped_query_attention import precompute_freqs_cis
+            self.freqs_cis = precompute_freqs_cis(self.params.gqa_config.dim, self.params.max_seq_len)
         elif params.attention_type == AttentionType.MLA:
             # MLA precomputes its own frequencies internally
             from .MLA import precompute_freqs_cis

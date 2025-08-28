@@ -177,6 +177,7 @@ class TrainingConfig:
     
     # WandB logging
     wandb_log: bool = True
+    wandb_entity: str = "nanayeb34-sabiyarn"
     wandb_project: str = "sabiyarn-new-training"
     wandb_run_name: str = "modern_training"
     wandb_tags: list = field(default_factory=lambda: ["MLA", "MoE", "MTP", "SabiYarn"])
@@ -332,6 +333,7 @@ class SabiYarnTrainer:
                 
                 wandb.init(
                     project=self.config.wandb_project,
+                    entity=self.config.wandb_entity,
                     name=run_name,
                     config=wandb_config,
                     tags=self.config.wandb_tags,
@@ -996,7 +998,78 @@ class SabiYarnTrainer:
             LOG.warning(f"Text generation failed: {e}")
         finally:
             self.model.train()
+    
+
+    def save_checkpoint_wandb(self):
+        """ Save training checkpoint to wandb."""
+
+        if not self.master_process:
+            return
+        
+        raw_model = self.model.module if self.ddp else self.model
+        checkpoint = {
+            "model": raw_model.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "model_args": raw_model.params,
+            "iter_num": self.iter_num,
+            "best_val_loss": self.best_val_loss,
+            "config": self.config.__dict__,
+        }
+        os.makedirs(self.run_dir, exist_ok=True)
+        # Update a rolling 'ckpt.pt' and also an iter-stamped file for history
+        ckpt_latest = os.path.join(self.run_dir, "ckpt.pt")
+        ckpt_iter = os.path.join(self.run_dir, f"ckpt_{self.iter_num:07d}.pt")
+        torch.save(checkpoint, ckpt_latest)
+        torch.save(checkpoint, ckpt_iter)
+
+        try:
+            with open(os.path.join(self.config.out_dir, "LATEST_RUN.txt"), "w") as fp:
+                fp.write(self.run_dir)
+        except Exception:
+            pass
+        # Save MTP modules separately if available
+        if hasattr(raw_model, 'multi_token_predictor') and raw_model.multi_token_predictor is not None:
+            mtp_checkpoint = {
+                "mtp_state_dict": raw_model.multi_token_predictor.state_dict(),
+                "model_args": raw_model.params,
+                "iter_num": self.iter_num,
+                "best_val_loss": self.best_val_loss,
+                "config": self.config.__dict__,
+            }
             
+            mtp_ckpt_path = os.path.join(self.run_dir, "mtp_ckpt.pt")
+            torch.save(mtp_checkpoint, mtp_ckpt_path)
+            LOG.info(f"MTP module checkpoint saved to {mtp_ckpt_path}")
+            
+            # Also save individual MTP components for fine-grained control
+            mtp_components = {}
+            mtp_module = raw_model.multi_token_predictor
+            
+            if hasattr(mtp_module, 'mtp_transformer_block'):
+                mtp_components['transformer_block'] = mtp_module.mtp_transformer_block.state_dict()
+                
+            if hasattr(mtp_module, 'output_heads') and mtp_module.output_heads is not None:
+                mtp_components['output_heads'] = mtp_module.output_heads.state_dict()
+                
+            if hasattr(mtp_module, 'projection'):
+                mtp_components['projection'] = mtp_module.projection.state_dict()
+                
+            if mtp_components:
+                mtp_components_path = os.path.join(self.run_dir, "mtp_components.pt")
+                torch.save(mtp_components, mtp_components_path)
+                LOG.info(f"MTP components saved to {mtp_components_path}")
+        artifact = wandb.Artifact(
+                name= self.config.wandb_run_name, # artifact name
+                type="model",              # artifact type
+                description=f"Model checkpoints for {self.config.wandb_run_name}"
+                )
+        artifact.add_file(ckpt_latest)
+        # Log the artifact to W&B
+        wandb.log_artifact(artifact)
+    
+
+
+
     def save_checkpoint(self):
         """Save training checkpoint."""
         if not self.master_process:
@@ -1019,6 +1092,7 @@ class SabiYarnTrainer:
         ckpt_iter = os.path.join(self.run_dir, f"ckpt_{self.iter_num:07d}.pt")
         torch.save(checkpoint, ckpt_latest)
         torch.save(checkpoint, ckpt_iter)
+        
         # Update a simple pointer file in base out_dir for discovery
         try:
             with open(os.path.join(self.config.out_dir, "LATEST_RUN.txt"), "w") as fp:
@@ -1241,6 +1315,7 @@ class SabiYarnTrainer:
                     self.best_val_loss = losses["val"]
                     if self.iter_num > 0:
                         self.save_checkpoint()
+                        self.save_checkpoint_wandb()
                         
             if self.iter_num == 0 and self.config.eval_only:
                 break

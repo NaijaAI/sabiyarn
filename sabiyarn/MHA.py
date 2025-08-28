@@ -235,5 +235,5 @@ class SelfAttention(nn.Module):
         scores = F.softmax(scores.float(), dim=-1).type_as(xq)
         output = torch.matmul(scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
-        return self.wo(output) 
+        return self.wo(output)
 

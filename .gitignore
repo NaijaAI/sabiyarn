@@ -9,8 +9,10 @@ __pycache__/
 wandb/
 *.bin
 
+
 # Distribution / packaging
 .Python
+*.zip
 build/
 develop-eggs/
 dist/
