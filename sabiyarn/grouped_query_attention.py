@@ -172,7 +172,8 @@ class GroupedQueryAttention(nn.Module):
     def forward(self, 
         x: torch.Tensor, 
         start_pos:int,
-        freqs_cis: torch.Tensor, mask:Optional[torch.Tensor]) -> torch.Tensor:
+        freqs_cis: torch.Tensor, 
+        mask:Optional[torch.Tensor]) -> torch.Tensor:
         """
         Forward pass of the  GroupedQueryAttention module.
 
@@ -219,10 +220,10 @@ class GroupedQueryAttention(nn.Module):
             seq_len = scores.size(-1)
             causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=scores.device), diagonal=1)
             scores = scores.masked_fill(causal_mask.bool(), float("-inf"))
-            scores = F.softmax(scores.float(), dim=-1).type_as(xq)
-            output = torch.matmul(scores, xv)
-            output = output.transpose(1,2).contiguous().view(bsz, seq_len, -1)
-            return self.ffn(output)
+        scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+        output = torch.matmul(scores, xv)
+        output = output.transpose(1,2).contiguous().view(bsz, seq_len, -1)
+        return self.ffn(output)
 
 
 

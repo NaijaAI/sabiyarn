@@ -159,6 +159,7 @@ def _create_attention(layer_id: int, args: 'ModelArgs') -> nn.Module:
             raise ValueError("mla_config must be provided for MLA attention type")
         
         return MLA(args.mla_config)
+
     elif args.attention_type == AttentionType.GQA:
         if args.gqa_config is None:
             raise ValueError("gqa_config must be provided for Grouped Query Attention")
@@ -554,7 +555,7 @@ class TransformerBlock(nn.Module):
         #     # Standard attention flow
         attn_out = self.attention(x_norm, start_pos, freqs_cis, mask)
         
-        print(attn_out) # MLA also returns outputs without scores
+        # MLA also returns outputs without scores
             
         if self.use_j_linear and self.linear_j is not None:
             # TransformerBlockJ: attention + J linear
