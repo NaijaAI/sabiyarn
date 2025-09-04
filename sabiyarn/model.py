@@ -405,11 +405,8 @@ class TransformerBlock(nn.Module):
         self.attention_type = args.attention_type
         
         # Optional J linear transformation
-        if use_j_linear:
-            self.linear_j = nn.Linear(args.dim, args.dim)
-        else:
-            self.linear_j = None
-        
+        self.linear_j = nn.Linear(args.dim, args.dim) if use_j_linear else None
+       
         # Create feed forward - MoE only used with MLA attention
         if args.moe and args.attention_type == AttentionType.MLA:
             # Import MoE only when needed to avoid circular import
@@ -466,12 +463,8 @@ class TransformerBlock(nn.Module):
         
         # MLA also returns outputs without scores
             
-        if self.use_j_linear:
-            # TransformerBlockJ: attention + J linear
-            h = x + attn_out + self.linear_j(x_norm)
-        else:
-            # Standard TransformerBlock: just attention
-            h = x + attn_out
+        # TransformerBlockJ: attention + J linear
+        h = x + attn_out + self.linear_j(x_norm) if self.use_j_linear else  x + attn_out
 
         # Apply logic network if enabled
         if self.use_logic_network and self.logic_gate is not None:
@@ -548,31 +541,26 @@ class SabiYarn(nn.Module):
                     for _ in range(self.repeat_factor)
                 ]
             else:
-                # Fallback to IMMEDIATE if an unknown strategy is provided
-                self.layer_execution_order = [
-                    unique_id
-                    for unique_id in range(self.n_unique_layers)
-                    for _ in range(self.repeat_factor)
-                ]
+                self.layer_execution_order = list(range(self.n_unique_layers))
                 
         else:
             # Traditional: each layer is unique
             self.layers = torch.nn.ModuleList()
             for layer_id in range(self.n_layers):
                 self.layers.append(TransformerBlock(layer_id, params, use_j_linear=params.use_j))
-            self.layer_execution_order = [unique_id for unique_id in self.layers]
+            self.layer_execution_order = list(self.layers)
 
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.lm_head = nn.Linear(
             params.dim,
             params.vocab_size,
-            bias=False,
+            bias=params.bias,
         )
-        if params.tie_weights == True:
+        if params.tie_weights:
             self.lm_head.weight = self.tok_embeddings.weight
 
         # Multi-token prediction module (only for MLA)
-        if params.multi_token_prediction and params.attention_type == AttentionType.MLA:
+        if params.multi_token_prediction: # and params.attention_type == AttentionType.MLA:
             self.multi_token_predictor = MultiTokenPredictor(params)
             self.use_multi_token = True
         else:
@@ -656,7 +644,7 @@ class SabiYarn(nn.Module):
             start_pos (int): Starting position for attention caching.
             mask (Optional[torch.Tensor]): Attention mask.
             return_multi_token (Optional[bool]): Whether to return multi-token predictions.
-                                               If None, uses self.use_multi_token
+            If None, uses self.use_multi_token
 
         Returns:
             Tuple or Triple: 
@@ -673,13 +661,14 @@ class SabiYarn(nn.Module):
         if self.params.attention_type == AttentionType.MLA:
             # MLA uses its own frequency computation
             freqs_cis = self.freqs_cis
-        else:
+            
+        elif self.freq_cis is not None:
             # For non-MLA attention, slice pre-computed frequencies
-            if self.freqs_cis is not None:
-                self.freqs_cis = self.freqs_cis.to(h.device)
-                freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
-            else:
-                freqs_cis = None
+            # if self.freqs_cis is not None:
+            self.freqs_cis = self.freqs_cis.to(h.device)
+            freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
+        else:
+            freqs_cis = None
 
         # Create causal mask if none provided
         if mask is None and seqlen > 1:
@@ -709,8 +698,7 @@ class SabiYarn(nn.Module):
         
         # Multi-token prediction
         multi_token_logits = None
-        if return_multi_token or (return_multi_token is None and self.use_multi_token):
-            if self.multi_token_predictor is not None:
+        if (return_multi_token or (return_multi_token is None and self.use_multi_token)) and self.multi_token_predictor is not None:
                 multi_token_logits = self.multi_token_predictor(
                     input_embeddings=input_embeddings,
                     transformer_output=transformer_output,
@@ -738,9 +726,9 @@ class SabiYarn(nn.Module):
         
         if multi_token_logits is not None:
             return hidden_states, logits, multi_token_logits
-        else:
-            return hidden_states, logits
-
+        
+        return hidden_states, logits
+     
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, use_multi_token=False):
@@ -763,14 +751,12 @@ class SabiYarn(nn.Module):
             
             # forward the model to get the logits for the index in the sequence
             if use_multi_token and self.use_multi_token:
-                _, logits, multi_token_logits = self(idx_cond, start_pos=0, return_multi_token=True)
+                _, logits, _ = self(idx_cond, start_pos=0, return_multi_token=True)
                 
-                logits = logits[:, -1, :] / temperature
-
             else:
                 _, logits = self(idx_cond, start_pos=0)
               
-                logits = logits[:, -1, :] / temperature
+            logits = logits[:, -1, :] / temperature
             
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
