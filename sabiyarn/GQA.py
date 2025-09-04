@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch import nn
 from typing import Optional
 from dataclasses import dataclass
-from utils import precompute_freqs_cis, apply_rotary_emb, reshape_for_broadcast, repeat_kv
+from utils import apply_rotary_emb, repeat_kv
 
 @dataclass
 class GQAArgs:
