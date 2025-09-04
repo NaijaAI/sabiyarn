@@ -91,7 +91,7 @@ class TrainingConfig:
     max_seq_len: int = 1024
     max_batch_size: int = 14 #8
     train_batch_size: int = 14 #8
-    
+    bias: bool = False
     # Attention-specific configs
     use_mla: bool = True
     use_differential_attention: bool = False
@@ -131,7 +131,7 @@ class TrainingConfig:
     use_j_linear: bool = True
     tie_weights: bool = True
     norm_eps: float = 1e-5
-    init_std: float = 0.006
+    init_std: float = 0.02
     
     # Training Configuration
     

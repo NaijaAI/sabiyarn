@@ -7,7 +7,7 @@ project_root = os.path.join(os.path.dirname(__file__), '..')
 sys.path.insert(0, project_root)
 
 # Import as proper package
-from sabiyarn.grouped_query_attention import GroupedQueryAttention, GQAArgs, precompute_freqs_cis
+from sabiyarn.GQA import GroupedQueryAttention, GQAArgs, precompute_freqs_cis
 
 def test_gqa():
     # Create smaller config for testing
