@@ -17,7 +17,8 @@ def test_gqa():
         n_heads=8,
         n_kv_heads=4,  # Test grouped query attention
         max_batch_size=2,
-        max_seq_len=64
+        max_seq_len=64,
+        dropout = 0.1
     )
     
     # Initialize model
