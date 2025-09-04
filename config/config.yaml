@@ -22,6 +22,7 @@ wandb:
   log : true  # disabled by default
   project : sabiyarn-ablations
   run_name : ablation_1  # 'run' + str(time.time())
+  save_model_to_wandb: true
   seed: 42
 
 # data
@@ -69,6 +70,7 @@ model:
     name: "Aletheia-ng/SabiYarn_test"
     num_proc: 64
     process_one_file_at_a_time: True
+
 # adamw optimizer
 optimizer:
   name : "adam"
