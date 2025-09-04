@@ -584,10 +584,10 @@ class SabiYarn(nn.Module):
 
         # Precompute frequencies for non-MLA attention types
         if params.attention_type == AttentionType.SELF_ATTENTION:
-            from .MHA import precompute_freqs_cis
+            from .utils import precompute_freqs_cis
             self.freqs_cis = precompute_freqs_cis(
-                self.params.dim // self.params.n_heads,
-                self.params.max_seq_len * 2,
+                self.params.mha_config.dim // self.params.mha_config.n_heads,
+                self.params.mha_config.max_seq_len * 2,
             )
         elif params.attention_type == AttentionType.DIFFERENTIAL_ATTENTION:
             if params.diff_attn_config is None:
@@ -601,7 +601,7 @@ class SabiYarn(nn.Module):
                 self.params.max_seq_len * 2,)
 
         elif params.attention_type == AttentionType.GQA:
-            from .GQA import precompute_freqs_cis
+            from .utils import precompute_freqs_cis
             self.freqs_cis = precompute_freqs_cis(self.params.gqa_config.dim // self.params.gqa_config.n_heads,
             self.params.max_seq_len*2)
 
@@ -610,7 +610,7 @@ class SabiYarn(nn.Module):
             from .MLA import precompute_freqs_cis
             if params.mla_config is None:
                 raise ValueError("mla_config must be provided for MLA")
-            self.freqs_cis = precompute_freqs_cis(params.mla_config)
+            self.freqs_cis = precompute_freqs_cis(self.params.mla_config)
         else:
             self.freqs_cis = None
 

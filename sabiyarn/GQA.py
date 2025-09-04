@@ -15,7 +15,8 @@ class GQAArgs:
     n_heads: int = 16 # number of query heads
     max_seq_len: int = 2048
     max_batch_size: int = 32
-    use_kv_cache = True
+    use_kv_cache: bool = True
+    dropout: float = 0.1
 
 class GroupedQueryAttention(nn.Module):
     def __init__(self, args: GQAArgs):
@@ -27,7 +28,11 @@ class GroupedQueryAttention(nn.Module):
         self.head_dim = self.dim // self.n_heads
         self.n_rep = self.n_heads // self.n_kv_heads
         self.use_kv_cache = args.use_kv_cache
+        self.dropout = args.dropout
 
+        self.attn_dropout = nn.Dropout(args.dropout)
+        self.resid_dropout = nn.Dropout(args.dropout)
+        
         self.wq = nn.Linear(
             self.dim,
             self.n_heads * self.head_dim,
@@ -121,9 +126,10 @@ class GroupedQueryAttention(nn.Module):
             causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=scores.device), diagonal=1)
             scores = scores.masked_fill(causal_mask.bool(), float("-inf"))
         scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+        scores = self.attn_dropout(scores)
         output = torch.matmul(scores, xv)
         output = output.transpose(1,2).contiguous().view(bsz, seq_len, -1)
-        return self.wo(output)
+        return self.resid_dropout(self.wo(output))
 
 
 

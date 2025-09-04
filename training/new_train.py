@@ -44,6 +44,8 @@ from data import prepare
 from sabiyarn.model import ModelArgs, SabiYarn, AttentionType
 from sabiyarn.MLA import MLAConfig
 from sabiyarn.differential_attention import DiffAttnArgs
+from sabiyarn.GQA import GQAArgs
+from sabiyarn.MHA import SelfAttnArgs
 from cut_cross_entropy import linear_cross_entropy
 from training.utils import *
 from training.constant_tokens import MASK
@@ -51,7 +53,7 @@ from training.training_attention_mask import create_causal_mask, create_causal_m
 
 from transformers import AutoTokenizer
 from bitsandbytes import optim as bnb_optim
-
+            
 try:
     from torch.cuda.amp import GradScaler
 except ImportError:
@@ -92,6 +94,7 @@ class TrainingConfig:
     max_batch_size: int = 14 #8
     train_batch_size: int = 14 #8
     bias: bool = False
+    dropout: float= 0.1
     # Attention-specific configs
     use_mla: bool = True
     use_differential_attention: bool = False
@@ -102,6 +105,7 @@ class TrainingConfig:
     mla_qk_rope_head_dim: int = 64
     mla_v_head_dim: int = 128
     mla_qk_nope_head_dim: int = 128
+    
     
     # MoE Configuration (only with MLA)
     use_moe: bool = False
@@ -660,7 +664,9 @@ class SabiYarnTrainer:
         
         # Create attention-specific configurations
         mla_config = None
-        diff_attn_args = None
+        diff_attn_config = None
+        gqa_config = None
+        mha_config = None
         
         if self.config.attention_type ==  AttentionType.MLA:
             mla_config = MLAConfig(
@@ -684,7 +690,7 @@ class SabiYarnTrainer:
             )
             
         elif self.config.attention_type == AttentionType.DIFFERENTIAL_ATTENTION:
-            diff_attn_args = DiffAttnArgs(
+            diff_attn_config = DiffAttnArgs(
                 depth=0,  # Will be set per layer
                 max_batch_size=self.config.max_batch_size,
                 n_heads=self.config.n_heads,
@@ -693,7 +699,15 @@ class SabiYarnTrainer:
                 max_seq_len=self.config.max_seq_len,
                 norm_eps=self.config.norm_eps
             )
-        
+            
+        elif self.config.attention_type == AttentionType.GQA:
+            gqa_config = GQAArgs(dim= 2048, n_kv_heads= 8 , n_heads = 16,  max_seq_len = 2048, max_batch_size = 32,
+                use_kv_cache = True, dropout = self.config.dropout)
+        else:
+            mha_config = SelfAttnArgs(dim= 2048, n_kv_heads= 8 , n_heads = 16,  max_seq_len = 2048, max_batch_size = 32,
+                use_kv_cache = True, bias= self.config.bias, dropout=self.config.dropout)
+            
+ 
         return ModelArgs(
             # Basic architecture
             dim=self.config.dim,
@@ -707,7 +721,9 @@ class SabiYarnTrainer:
             # Attention configuration
             attention_type=self.config.attention_type,
             mla_config=mla_config,
-            diff_attn_args=diff_attn_args,
+            diff_attn_config=diff_attn_config,
+            mha_config = mha_config,
+            gqa_config = gqa_config,
             
             # MoE configuration (only with MLA)
             moe=self.config.use_moe and self.config.attention_type == "MLA",
