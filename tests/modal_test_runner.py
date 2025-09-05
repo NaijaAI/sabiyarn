@@ -124,6 +124,7 @@ def run_tests_on_gpu():
             config = ModelArgs(
                 dim=256,
                 n_heads=8,
+                vocab_size=1000,
                 attention_type=AttentionType.SELF_ATTENTION,
                 mha_config = mha_config
             )
@@ -454,7 +455,7 @@ def run_tests_on_gpu():
                 dim=256,
                 n_heads=8,
                 attention_type=AttentionType.GQA,
-                mha_config = mha_config
+                mha_config = gqa_config
             )
             gqa_attention = _create_attention(0, gqa_config)
             print("✅ MHA attention module created")
