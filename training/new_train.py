@@ -85,7 +85,7 @@ clear_cuda()
 @dataclass
 class TrainingConfig:
     # Model Architecture
-    attention_type: AttentionType = AttentionType.MLA #"self_attention" , "differential_attention", "MLA"
+    attention_type: AttentionType = AttentionType.SELF_ATTENTION #"self_attention" , "differential_attention", "MLA"
     dim: int = 256
     n_layers: int = 10
     n_heads: int = 8
@@ -94,10 +94,10 @@ class TrainingConfig:
     max_seq_len: int = 1024
     max_batch_size: int = 14 #8
     train_batch_size: int = 14 #8
-    bias: bool = False
+    bias: bool = True
     dropout: float= 0.1
     # Attention-specific configs
-    use_mla: bool = True
+    use_mla: bool = False
     use_differential_attention: bool = False
     
     # MLA Configuration
@@ -140,7 +140,7 @@ class TrainingConfig:
     
     # Training Configuration
     
-    gradient_accumulation_steps: int = 10   # 5 * 8
+    gradient_accumulation_steps: int = 20   # 5 * 8
     learning_rate: float = 3e-4
     max_iters: int = 600000
     weight_decay: float = 1e-1
@@ -150,15 +150,15 @@ class TrainingConfig:
     
     # Learning rate schedule
     decay_lr: bool = True
-    warmup_iters: int = 100 #1500
+    warmup_iters: int = 400 #1500
     lr_decay_iters: int = 600000
-    min_lr: float = 1e-5 # 6e-5
+    min_lr: float = 6e-5 # 6e-5
     
     # Optimizer
     optimizer_type: str = "adamw"  # "adam", "adamw", "sgd", "adam8bit"
     
     # Loss function
-    use_cut_cross_entropy: bool = True
+    use_cut_cross_entropy: bool = False
     
     # Custom masking
     use_custom_causal_mask: bool = True
@@ -938,7 +938,7 @@ class SabiYarnTrainer:
                     )
         else:
             # Standard training without MTP
-            hidden_states, logits = self.model(tokens, start_pos=0, mask=mask)
+            hidden_states, logits, _ = self.model(tokens, start_pos=0, mask=mask)
             
             if self.config.use_cut_cross_entropy:
                 raw_model = self.model.module if self.ddp else self.model
