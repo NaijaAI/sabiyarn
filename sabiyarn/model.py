@@ -14,7 +14,7 @@ from .differential_attention import DiffAttention, DiffAttnArgs
 from .MLA import MLA, MLAConfig #, ColumnParallelLinear, RowParallelLinear, linear
 from .MHA import CausalSelfAttention, SelfAttnArgs
 from .GQA import GroupedQueryAttention, GQAArgs
-from .multitoken_predictor import MultiTokenPredictor
+
 
 
 class AttentionType(str, Enum):
