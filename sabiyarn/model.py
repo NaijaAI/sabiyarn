@@ -576,7 +576,7 @@ class SabiYarn(nn.Module):
             from .utils import precompute_freqs_cis
             self.freqs_cis = precompute_freqs_cis(
                 self.params.mha_config.dim // self.params.mha_config.n_heads,
-                self.params.mha_config.max_seq_len * 2,
+                self.params.max_seq_len * 2,
             )
         elif params.attention_type == AttentionType.DIFFERENTIAL_ATTENTION:
             if params.diff_attn_config is None:
