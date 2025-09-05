@@ -85,7 +85,7 @@ clear_cuda()
 @dataclass
 class TrainingConfig:
     # Model Architecture
-    attention_type: AttentionType = AttentionType.SELF_ATTENTION #"self_attention" , "differential_attention", "MLA"
+    attention_type: AttentionType = AttentionType.GQA #"self_attention" , "differential_attention", "MLA"
     dim: int = 256
     n_layers: int = 10
     n_heads: int = 8
