@@ -174,7 +174,7 @@ def _create_attention(layer_id: int, args: 'ModelArgs') -> nn.Module:
     else:  # Default to SELF_ATTENTION
         if args.mha_config is None:
             raise ValueError("mha_config must be provided for Grouped Query Attention")
-        return CausalSelfAttention(args)
+        return CausalSelfAttention(args.mha_config)
 
 
 @dataclass
@@ -184,6 +184,7 @@ class ModelArgs:
     n_heads: int = 32
     n_kv_heads: Optional[int] = None
     bias: bool = False
+    dropout: float = 0.1
     vocab_size: int = -1  # defined later by tokenizer
     multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     ffn_dim_multiplier: Optional[float] = None

@@ -111,17 +111,22 @@ def run_tests_on_gpu():
         
         try:
             # Create MHA configuration
-            config = ModelArgs(
-                dim=256,
-                n_layers=2,
+            mha_config = SelfAttnArgs(
+                dim= 256,
                 n_heads=8,
-                n_kv_heads=4,
-                vocab_size=1000,
                 max_batch_size=2,
                 max_seq_len=32,
-                attention_type=AttentionType.SELF_ATTENTION
+                use_kv_cache= True,
+                bias = False,
+                dropout = 0.1,
             )
             
+            config = ModelArgs(
+                dim=256,
+                n_heads=8,
+                attention_type=AttentionType.SELF_ATTENTION,
+                mha_config = mha_config
+            )
             # Initialize model
             model = SabiYarn(config)
             print(f"✅ MHA model created: {model.get_model_size()}")
@@ -173,7 +178,7 @@ def run_tests_on_gpu():
                 max_batch_size=2,
                 max_seq_len=32,
                 attention_type=AttentionType.DIFFERENTIAL_ATTENTION,
-                diff_attn_args=diff_args
+                diff_attn_config=diff_args
             )
             
             # Initialize model
@@ -448,7 +453,7 @@ def run_tests_on_gpu():
             gqa_config = ModelArgs(
                 dim=256,
                 n_heads=8,
-                attention_type=AttentionType.SELF_ATTENTION,
+                attention_type=AttentionType.GQA,
                 mha_config = mha_config
             )
             gqa_attention = _create_attention(0, gqa_config)
@@ -467,7 +472,7 @@ def run_tests_on_gpu():
             diff_config = ModelArgs(
                 dim=256,
                 attention_type=AttentionType.DIFFERENTIAL_ATTENTION,
-                diff_attn_args=diff_args
+                diff_attn_config=diff_args
             )
             diff_attention = _create_attention(0, diff_config)
             print("✅ Differential attention module created")
