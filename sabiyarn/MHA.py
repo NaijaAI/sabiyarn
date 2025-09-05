@@ -70,12 +70,14 @@ class CausalSelfAttention(nn.Module):
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        k = k.view(B, T, self.n_head, C // self.n_head)
+        q = q.view(B, T, self.n_head, C // self.n_head)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
         #apply rotary embeddings
         q, k = apply_rotary_emb(q, k, freqs_cis)
+        q = q.transpose(1, 2) # (B, nh, T, hs)
+        k= k.transpose(1, 2) # (B, nh, T, hs)
         
         if self.use_kv_cache:
             self.cache_k = self.cache_k.to(q)
