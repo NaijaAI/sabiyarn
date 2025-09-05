@@ -78,8 +78,8 @@ class CausalSelfAttention(nn.Module):
         q, k = apply_rotary_emb(q, k, freqs_cis)
         
         if self.use_kv_cache:
-            self.cache_k = self.cache_k.to(k)
-            self.cache_v = self.cache_v.to(v)
+            self.cache_k = self.cache_k.to(q)
+            self.cache_v = self.cache_v.to(q)
 
             self.cache_k[:B, start_pos: start_pos + T] = k
             self.cache_v[:B, start_pos: start_pos + T] = v
