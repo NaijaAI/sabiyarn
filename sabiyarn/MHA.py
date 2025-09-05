@@ -46,8 +46,8 @@ class CausalSelfAttention(nn.Module):
             self.cache_k = torch.zeros(
             (
                 config.max_batch_size,
-                config.max_seq_len,
                 self.n_head,
+                config.max_seq_len,
                 config.dim // config.n_heads
             )
             )
@@ -55,8 +55,8 @@ class CausalSelfAttention(nn.Module):
             self.cache_v = torch.zeros(
             (
                 config.max_batch_size,
-                config.max_seq_len,
                 self.n_head,
+                config.max_seq_len,                
                 config.dim // config.n_heads
             )
         )
@@ -83,11 +83,11 @@ class CausalSelfAttention(nn.Module):
             self.cache_k = self.cache_k.to(q)
             self.cache_v = self.cache_v.to(q)
 
-            self.cache_k[:B, start_pos: start_pos + T] = k
-            self.cache_v[:B, start_pos: start_pos + T] = v
+            self.cache_k[:B, :, start_pos: start_pos + T] = k
+            self.cache_v[:B,:, start_pos: start_pos + T] = v
 
-            k = self.cache_k[:B, :start_pos + T]
-            v = self.cache_v[:B, :start_pos + T]
+            k = self.cache_k[:B, :, :start_pos + T]
+            v = self.cache_v[:B, :, :start_pos + T]
         
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
