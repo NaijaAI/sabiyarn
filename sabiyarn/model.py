@@ -11,13 +11,14 @@ from torch import nn
 
 from .memory_reasoning import LogicNetwork
 from .differential_attention import DiffAttention, DiffAttnArgs
-from .MLA import MLA, MLAConfig, ColumnParallelLinear, RowParallelLinear, linear
-from .MHA import SelfAttention, SelfAttnArgs, precompute_freqs_cis
-from .grouped_query_attention import GroupedQueryAttention, GQAArgs
+from .MLA import MLA, MLAConfig #, ColumnParallelLinear, RowParallelLinear, linear
+from .MHA import CausalSelfAttention, SelfAttnArgs
+from .GQA import GroupedQueryAttention, GQAArgs
+from .multitoken_predictor import MultiTokenPredictor
 
 
 class AttentionType(str, Enum):
-    SELF_ATTENTION = "self_attention"
+    SELF_ATTENTION = "vanilla_attention"
     DIFFERENTIAL_ATTENTION = "differential_attention"
     MLA = "MLA"
     GQA = "GQA"
@@ -38,14 +39,17 @@ def _validate_attention_config(args: 'ModelArgs') -> None:
         ValueError: If configuration is invalid.
     """
     if args.attention_type == AttentionType.DIFFERENTIAL_ATTENTION:
-        if args.diff_attn_args is None:
-            raise ValueError("diff_attn_args must be provided for DIFFERENTIAL_ATTENTION")
+        if args.diff_attn_config is None:
+            raise ValueError("diff_attn_config must be provided for DIFFERENTIAL_ATTENTION")
         # Validate compatibility
-        if args.diff_attn_args.embed_dim != args.dim:
-            raise ValueError(f"diff_attn_args.embed_dim ({args.diff_attn_args.embed_dim}) must match args.dim ({args.dim})")
+        if args.diff_attn_config.embed_dim != args.dim:
+            raise ValueError(f"diff_attn_config.embed_dim ({args.diff_attn_config.embed_dim}) must match args.dim ({args.dim})")
     
     elif args.attention_type == AttentionType.GQA:
         if args.gqa_config is None:
+            raise ValueError("GQAArgs must be provided for Grouped Query Attention")
+    elif args.attention_type == AttentionType.SELF_ATTENTION:
+        if args.mha_config is None:
             raise ValueError("GQAArgs must be provided for Grouped Query Attention")
     elif args.attention_type == AttentionType.MLA:
         if args.mla_config is None:
@@ -149,8 +153,10 @@ def _create_attention(layer_id: int, args: 'ModelArgs') -> nn.Module:
     
     if args.attention_type == AttentionType.DIFFERENTIAL_ATTENTION:
         # Create a copy to avoid modifying the original config
-        # We know diff_attn_args is not None due to validation
-        diff_args = dataclasses.replace(args.diff_attn_args, depth=layer_id)  # type: ignore
+        # We know diff_attn_config is not None due to validation
+        if args.diff_attn_config is None:
+            raise ValueError("gqa_config must be provided for Grouped Query Attention")
+        diff_args = dataclasses.replace(args.diff_attn_config, depth=layer_id)  # type: ignore
         return DiffAttention(diff_args)
     
     elif args.attention_type == AttentionType.MLA:
@@ -166,14 +172,9 @@ def _create_attention(layer_id: int, args: 'ModelArgs') -> nn.Module:
         return GroupedQueryAttention(args.gqa_config)
     
     else:  # Default to SELF_ATTENTION
-        standard_args = SelfAttnArgs(
-            dim=args.dim,
-            n_heads=args.n_heads,
-            n_kv_heads=args.n_kv_heads,
-            max_batch_size=args.max_batch_size,
-            max_seq_len=args.max_seq_len
-        )
-        return SelfAttention(standard_args)
+        if args.mha_config is None:
+            raise ValueError("mha_config must be provided for Grouped Query Attention")
+        return CausalSelfAttention(args)
 
 
 @dataclass
@@ -182,6 +183,7 @@ class ModelArgs:
     n_layers: int = 32
     n_heads: int = 32
     n_kv_heads: Optional[int] = None
+    bias: bool = False
     vocab_size: int = -1  # defined later by tokenizer
     multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     ffn_dim_multiplier: Optional[float] = None
@@ -205,10 +207,10 @@ class ModelArgs:
     use_j: bool = True
     tie_weights: bool = True
     attention_type: str = AttentionType.SELF_ATTENTION
-    diff_attn_args: Optional[DiffAttnArgs] = None
+    diff_attn_config: Optional[DiffAttnArgs] = None
     mla_config: Optional[MLAConfig] = None
     gqa_config: Optional[GQAArgs] = None
-    
+    mha_config: Optional[SelfAttnArgs] = None
     # Distributed training configuration
     auto_detect_distributed: bool = True
     distributed: bool = False
@@ -363,101 +365,6 @@ class FeedForward(nn.Module):
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
 
-class MultiTokenPredictor(nn.Module):
-    """
-    Multi-Token Prediction module following DeepSeek's architecture.
-    Uses a single transformer block as per the original design.
-    """
-    def __init__(self, args: 'ModelArgs'):
-        super().__init__()
-        self.dim = args.dim
-        self.num_prediction_tokens = args.num_prediction_tokens
-        
-        # RMS norms for input embedding and transformer output
-        self.input_embedding_norm = RMSNorm(args.dim, eps=args.norm_eps)
-        self.transformer_output_norm = RMSNorm(args.dim, eps=args.norm_eps)
-        
-        # Linear projection after concatenation
-        # Input: concatenated [normalized_embedding, normalized_transformer_output]
-        # Output: projected features for MTP transformer
-        projection_input_dim = 2 * args.dim  # Concatenated features
-        self.projection = nn.Linear(projection_input_dim, args.dim, bias=False)
-        
-        # Single MTP transformer block - use TransformerBlock for consistent initialization
-        self.mtp_transformer_block = TransformerBlock(0, args)
-        
-        # Final norm
-        self.output_norm = RMSNorm(args.dim, eps=args.norm_eps)
-        
-        # Multi-token output heads (if not sharing embeddings)
-        if not args.mtp_share_embeddings:
-            self.output_heads = nn.ModuleList([
-                nn.Linear(args.dim, args.vocab_size, bias=False)
-                for _ in range(self.num_prediction_tokens)
-            ])
-        else:
-            self.output_heads = None
-    
-    def forward(self, 
-                input_embeddings: torch.Tensor, 
-                transformer_output: torch.Tensor,
-                start_pos: int,
-                freqs_cis: torch.Tensor,
-                lm_head: Optional[nn.Linear] = None,
-                mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """
-        Args:
-            input_embeddings: (batch_size, seq_len, dim) - Original input embeddings
-            transformer_output: (batch_size, seq_len, dim) - Output from main transformer
-            start_pos: Starting position for attention caching
-            freqs_cis: Frequency embeddings for rotary attention
-            lm_head: Shared LM head if using shared embeddings
-            mask: Attention mask
-            
-        Returns:
-            multi_token_logits: (batch_size, seq_len, num_prediction_tokens, vocab_size)
-        """
-        batch_size, seq_len, dim = input_embeddings.shape
-        
-        # Step 1: Normalize input embedding and transformer output
-        norm_input_emb = self.input_embedding_norm(input_embeddings)
-        norm_transformer_out = self.transformer_output_norm(transformer_output)
-        
-        # Step 2: Concatenate normalized features
-        concatenated = torch.cat([norm_input_emb, norm_transformer_out], dim=-1)
-        
-        # Step 3: Linear projection
-        projected = self.projection(concatenated)
-        
-        # Step 4: Pass through single MTP transformer block
-        mtp_output = self.mtp_transformer_block(projected, start_pos, freqs_cis, mask)
-        
-        # Step 5: Final normalization
-        mtp_output = self.output_norm(mtp_output)
-        
-        # Step 6: Generate multi-token predictions
-        if self.output_heads is None and lm_head is not None:
-            # Use shared LM head - need to distinguish different prediction positions
-            multi_token_logits = []
-            for i in range(self.num_prediction_tokens):
-
-                logits = lm_head(mtp_output)
-                multi_token_logits.append(logits)
-            multi_token_logits = torch.stack(multi_token_logits, dim=2)
-        else:
-            # Use separate heads for each prediction position
-            if self.output_heads is None:
-                raise ValueError("output_heads should not be None when not sharing embeddings")
-            
-            multi_token_logits = []
-            for i, head in enumerate(self.output_heads):
-                logits = head(mtp_output)
-                multi_token_logits.append(logits)
-            multi_token_logits = torch.stack(multi_token_logits, dim=2)
-        
-        return multi_token_logits
-
-
 class TransformerBlock(nn.Module):
     def __init__(
         self,
@@ -495,13 +402,11 @@ class TransformerBlock(nn.Module):
         
         # Create attention using factory function
         self.attention = _create_attention(layer_id, args)
+        self.attention_type = args.attention_type
         
         # Optional J linear transformation
-        if use_j_linear:
-            self.linear_j = nn.Linear(args.dim, args.dim)
-        else:
-            self.linear_j = None
-        
+        self.linear_j = nn.Linear(args.dim, args.dim) if use_j_linear else None
+       
         # Create feed forward - MoE only used with MLA attention
         if args.moe and args.attention_type == AttentionType.MLA:
             # Import MoE only when needed to avoid circular import
@@ -553,16 +458,13 @@ class TransformerBlock(nn.Module):
         #     attn_out = x + self.attention(x, start_pos, freqs_cis, mask)  # Take output, ignore scores
         # else:
         #     # Standard attention flow
+        
         attn_out = self.attention(x_norm, start_pos, freqs_cis, mask)
         
         # MLA also returns outputs without scores
             
-        if self.use_j_linear and self.linear_j is not None:
-            # TransformerBlockJ: attention + J linear
-            h = x + attn_out + self.linear_j(x_norm)
-        else:
-            # Standard TransformerBlock: just attention
-            h = x + attn_out
+        # TransformerBlockJ: attention + J linear
+        h = x + attn_out + self.linear_j(x_norm) if self.use_j_linear else  x + attn_out
 
         # Apply logic network if enabled
         if self.use_logic_network and self.logic_gate is not None:
@@ -581,7 +483,7 @@ class SabiYarn(nn.Module):
 
         Args:
             params (ModelArgs): Model configuration parameters.
-            diff_attn_Args( DiffAttnArgs): configuration parameters for Differential Attention.
+            diff_attn_config( DiffAttnArgs): configuration parameters for Differential Attention.
 
         Attributes:
             params (ModelArgs): Model configuration parameters.
@@ -639,31 +541,26 @@ class SabiYarn(nn.Module):
                     for _ in range(self.repeat_factor)
                 ]
             else:
-                # Fallback to IMMEDIATE if an unknown strategy is provided
-                self.layer_execution_order = [
-                    unique_id
-                    for unique_id in range(self.n_unique_layers)
-                    for _ in range(self.repeat_factor)
-                ]
+                self.layer_execution_order = list(range(self.n_unique_layers))
                 
         else:
             # Traditional: each layer is unique
             self.layers = torch.nn.ModuleList()
             for layer_id in range(self.n_layers):
                 self.layers.append(TransformerBlock(layer_id, params, use_j_linear=params.use_j))
-            self.layer_execution_order = [unique_id for unique_id in self.layers]
+            self.layer_execution_order = list(self.layers)
 
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
         self.lm_head = nn.Linear(
             params.dim,
             params.vocab_size,
-            bias=False,
+            bias=params.bias,
         )
-        if params.tie_weights == True:
+        if params.tie_weights:
             self.lm_head.weight = self.tok_embeddings.weight
 
         # Multi-token prediction module (only for MLA)
-        if params.multi_token_prediction and params.attention_type == AttentionType.MLA:
+        if params.multi_token_prediction: # and params.attention_type == AttentionType.MLA:
             self.multi_token_predictor = MultiTokenPredictor(params)
             self.use_multi_token = True
         else:
@@ -675,24 +572,24 @@ class SabiYarn(nn.Module):
 
         # Precompute frequencies for non-MLA attention types
         if params.attention_type == AttentionType.SELF_ATTENTION:
-            from .MHA import precompute_freqs_cis
+            from .utils import precompute_freqs_cis
             self.freqs_cis = precompute_freqs_cis(
-                self.params.dim // self.params.n_heads,
-                self.params.max_seq_len * 2,
+                self.params.mha_config.dim // self.params.mha_config.n_heads,
+                self.params.mha_config.max_seq_len * 2,
             )
         elif params.attention_type == AttentionType.DIFFERENTIAL_ATTENTION:
-            if params.diff_attn_args is None:
-                raise ValueError("diff_attn_args must be provided for DIFFERENTIAL_ATTENTION")
+            if params.diff_attn_config is None:
+                raise ValueError("diff_attn_config must be provided for DIFFERENTIAL_ATTENTION")
             from .differential_attention import precompute_freqs_cis
             self.freqs_cis = precompute_freqs_cis(
                 # Differential attention uses half the head_dim for key and query vectors
-                self.params.diff_attn_args.embed_dim  # type: ignore
-                // self.params.diff_attn_args.n_heads  # type: ignore
+                self.params.diff_attn_config.embed_dim  # type: ignore
+                // self.params.diff_attn_config.n_heads  # type: ignore
                 // 2,
                 self.params.max_seq_len * 2,)
 
         elif params.attention_type == AttentionType.GQA:
-            from .grouped_query_attention import precompute_freqs_cis
+            from .utils import precompute_freqs_cis
             self.freqs_cis = precompute_freqs_cis(self.params.gqa_config.dim // self.params.gqa_config.n_heads,
             self.params.max_seq_len*2)
 
@@ -701,7 +598,7 @@ class SabiYarn(nn.Module):
             from .MLA import precompute_freqs_cis
             if params.mla_config is None:
                 raise ValueError("mla_config must be provided for MLA")
-            self.freqs_cis = precompute_freqs_cis(params.mla_config)
+            self.freqs_cis = precompute_freqs_cis(self.params.mla_config)
         else:
             self.freqs_cis = None
 
@@ -747,7 +644,7 @@ class SabiYarn(nn.Module):
             start_pos (int): Starting position for attention caching.
             mask (Optional[torch.Tensor]): Attention mask.
             return_multi_token (Optional[bool]): Whether to return multi-token predictions.
-                                               If None, uses self.use_multi_token
+            If None, uses self.use_multi_token
 
         Returns:
             Tuple or Triple: 
@@ -764,21 +661,22 @@ class SabiYarn(nn.Module):
         if self.params.attention_type == AttentionType.MLA:
             # MLA uses its own frequency computation
             freqs_cis = self.freqs_cis
-        else:
+            
+        elif self.freq_cis is not None:
             # For non-MLA attention, slice pre-computed frequencies
-            if self.freqs_cis is not None:
-                self.freqs_cis = self.freqs_cis.to(h.device)
-                freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
-            else:
-                freqs_cis = None
+            # if self.freqs_cis is not None:
+            self.freqs_cis = self.freqs_cis.to(h.device)
+            freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
+        else:
+            freqs_cis = None
 
-            # Create causal mask if none provided
-            if mask is None and seqlen > 1:
-                mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
-                mask = torch.triu(mask, diagonal=1)
-                mask = torch.hstack(
-                    [torch.zeros((seqlen, start_pos), device=tokens.device), mask]
-                ).type_as(h)
+        # Create causal mask if none provided
+        if mask is None and seqlen > 1:
+            mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
+            mask = torch.triu(mask, diagonal=1)
+            mask = torch.hstack(
+                [torch.zeros((seqlen, start_pos), device=tokens.device), mask]
+            ).type_as(h)
 
         # Forward through layers
         if self.params.layer_sharing:
@@ -800,8 +698,7 @@ class SabiYarn(nn.Module):
         
         # Multi-token prediction
         multi_token_logits = None
-        if return_multi_token or (return_multi_token is None and self.use_multi_token):
-            if self.multi_token_predictor is not None:
+        if (return_multi_token or (return_multi_token is None and self.use_multi_token)) and self.multi_token_predictor is not None:
                 multi_token_logits = self.multi_token_predictor(
                     input_embeddings=input_embeddings,
                     transformer_output=transformer_output,
@@ -829,9 +726,9 @@ class SabiYarn(nn.Module):
         
         if multi_token_logits is not None:
             return hidden_states, logits, multi_token_logits
-        else:
-            return hidden_states, logits
-
+        
+        return hidden_states, logits
+     
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, use_multi_token=False):
@@ -854,14 +751,12 @@ class SabiYarn(nn.Module):
             
             # forward the model to get the logits for the index in the sequence
             if use_multi_token and self.use_multi_token:
-                _, logits, multi_token_logits = self(idx_cond, start_pos=0, return_multi_token=True)
+                _, logits, _ = self(idx_cond, start_pos=0, return_multi_token=True)
                 
-                logits = logits[:, -1, :] / temperature
-
             else:
                 _, logits = self(idx_cond, start_pos=0)
               
-                logits = logits[:, -1, :] / temperature
+            logits = logits[:, -1, :] / temperature
             
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))

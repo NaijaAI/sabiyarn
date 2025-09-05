@@ -7,7 +7,8 @@ project_root = os.path.join(os.path.dirname(__file__), '..')
 sys.path.insert(0, project_root)
 
 # Import as proper package
-from sabiyarn.grouped_query_attention import GroupedQueryAttention, GQAArgs, precompute_freqs_cis
+from sabiyarn.GQA import GroupedQueryAttention, GQAArgs
+from sabiyarn.utils import precompute_freqs_cis
 
 def test_gqa():
     # Create smaller config for testing
@@ -16,7 +17,8 @@ def test_gqa():
         n_heads=8,
         n_kv_heads=4,  # Test grouped query attention
         max_batch_size=2,
-        max_seq_len=64
+        max_seq_len=64,
+        dropout = 0.1
     )
     
     # Initialize model

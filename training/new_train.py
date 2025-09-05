@@ -38,12 +38,15 @@ from torch.distributed import init_process_group, destroy_process_group
 from torch.optim import SGD, Adam, AdamW
 import numpy as np
 import wandb
+import transformers
 
 # SabiYarn imports
 from data import prepare
 from sabiyarn.model import ModelArgs, SabiYarn, AttentionType
 from sabiyarn.MLA import MLAConfig
 from sabiyarn.differential_attention import DiffAttnArgs
+from sabiyarn.GQA import GQAArgs
+from sabiyarn.MHA import SelfAttnArgs
 from cut_cross_entropy import linear_cross_entropy
 from training.utils import *
 from training.constant_tokens import MASK
@@ -51,7 +54,7 @@ from training.training_attention_mask import create_causal_mask, create_causal_m
 
 from transformers import AutoTokenizer
 from bitsandbytes import optim as bnb_optim
-
+            
 try:
     from torch.cuda.amp import GradScaler
 except ImportError:
@@ -91,7 +94,8 @@ class TrainingConfig:
     max_seq_len: int = 1024
     max_batch_size: int = 14 #8
     train_batch_size: int = 14 #8
-    
+    bias: bool = False
+    dropout: float= 0.1
     # Attention-specific configs
     use_mla: bool = True
     use_differential_attention: bool = False
@@ -102,6 +106,7 @@ class TrainingConfig:
     mla_qk_rope_head_dim: int = 64
     mla_v_head_dim: int = 128
     mla_qk_nope_head_dim: int = 128
+    
     
     # MoE Configuration (only with MLA)
     use_moe: bool = False
@@ -131,7 +136,7 @@ class TrainingConfig:
     use_j_linear: bool = True
     tie_weights: bool = True
     norm_eps: float = 1e-5
-    init_std: float = 0.006
+    init_std: float = 0.02
     
     # Training Configuration
     
@@ -181,6 +186,7 @@ class TrainingConfig:
     wandb_project: str = "sabiyarn-new-training"
     wandb_run_name: str = "modern_training"
     wandb_tags: list = field(default_factory=lambda: ["MLA", "MoE", "MTP", "SabiYarn"])
+    save_model_to_wandb: bool = True
     
     # Advanced monitoring
     log_grad_norm: bool = True
@@ -660,7 +666,9 @@ class SabiYarnTrainer:
         
         # Create attention-specific configurations
         mla_config = None
-        diff_attn_args = None
+        diff_attn_config = None
+        gqa_config = None
+        mha_config = None
         
         if self.config.attention_type ==  AttentionType.MLA:
             mla_config = MLAConfig(
@@ -684,7 +692,7 @@ class SabiYarnTrainer:
             )
             
         elif self.config.attention_type == AttentionType.DIFFERENTIAL_ATTENTION:
-            diff_attn_args = DiffAttnArgs(
+            diff_attn_config = DiffAttnArgs(
                 depth=0,  # Will be set per layer
                 max_batch_size=self.config.max_batch_size,
                 n_heads=self.config.n_heads,
@@ -693,7 +701,16 @@ class SabiYarnTrainer:
                 max_seq_len=self.config.max_seq_len,
                 norm_eps=self.config.norm_eps
             )
-        
+            
+        elif self.config.attention_type == AttentionType.GQA:
+            gqa_config = GQAArgs(dim= self.config.dim, n_kv_heads= self.config.n_kv_heads, n_heads = self.config.n_heads,  
+                    max_seq_len = self.config.max_seq_len, max_batch_size = self.config.max_batch_size, use_kv_cache = self.config.use_kv_cache, 
+                    dropout = self.config.dropout)
+        else:
+            mha_config = SelfAttnArgs(dim= self.config.dim, n_kv_heads= self.config.n_kv_heads, n_heads = self.config.n_heads,  
+                    max_seq_len = self.config.max_seq_len, max_batch_size = self.config.max_batch_size, use_kv_cache = self.config.use_kv_cache, bias= self.config.bias, dropout=self.config.dropout)
+            
+ 
         return ModelArgs(
             # Basic architecture
             dim=self.config.dim,
@@ -707,7 +724,9 @@ class SabiYarnTrainer:
             # Attention configuration
             attention_type=self.config.attention_type,
             mla_config=mla_config,
-            diff_attn_args=diff_attn_args,
+            diff_attn_config=diff_attn_config,
+            mha_config = mha_config,
+            gqa_config = gqa_config,
             
             # MoE configuration (only with MLA)
             moe=self.config.use_moe and self.config.attention_type == "MLA",
@@ -831,7 +850,7 @@ class SabiYarnTrainer:
         non_masked_tokens =  self.count_non_masked_tokens(y, MASK)
         
         if non_masked_tokens <= 10:
-            LOG.info(f"Number of Non-Masked Tokens: {non_masked_token}")
+            LOG.info(f"Number of Non-Masked Tokens: {non_masked_tokens}")
         if torch.isnan(y).any():
             LOG.info("Nan values detected in labels")
             
@@ -938,7 +957,7 @@ class SabiYarnTrainer:
                     ignore_index=MASK
                 )
                 
-        return total_loss, logits if not self.model.use_multi_token else hidden_states
+        return total_loss, hidden_states if self.model.use_multi_token else logits
         
     @torch.no_grad()
     def estimate_loss(self):
@@ -986,8 +1005,8 @@ class SabiYarnTrainer:
                     use_multi_token=self.model.use_multi_token
                 )
                 
-            input_text = self.tokenizer.decode(tokens[0].tolist(), skip_special_tokens=True)
-            output_text = self.tokenizer.decode(generated[0].tolist(), skip_special_tokens=True)
+            input_text = self.tokenizer.decode(tokens[0].tolist(), skip_special_tokens=False)
+            output_text = self.tokenizer.decode(generated[0].tolist(), skip_special_tokens=False)
             
             LOG.info("=" * 50)
             LOG.info(f"Input: {input_text[-100:]}")
@@ -1058,80 +1077,17 @@ class SabiYarnTrainer:
                 mtp_components_path = os.path.join(self.run_dir, "mtp_components.pt")
                 torch.save(mtp_components, mtp_components_path)
                 LOG.info(f"MTP components saved to {mtp_components_path}")
-        artifact = wandb.Artifact(
-                name= self.config.wandb_run_name, # artifact name
-                type="model",              # artifact type
-                description=f"Model checkpoints for {self.config.wandb_run_name}"
-                )
-        artifact.add_file(ckpt_latest)
-        # Log the artifact to W&B
-        wandb.log_artifact(artifact)
+        
+        if self.config.save_model_to_wandb:
+            artifact = wandb.Artifact(
+                    name= self.config.wandb_run_name, # artifact name
+                    type="model",              # artifact type
+                    description=f"Model checkpoints for {self.config.wandb_run_name}_{torch.__version__}_{transformers.__version__}"
+                    )
+            artifact.add_file(ckpt_latest)
+            # Log the artifact to W&B
+            wandb.log_artifact(artifact)
     
-
-
-
-    def save_checkpoint(self):
-        """Save training checkpoint."""
-        if not self.master_process:
-            return
-            
-        raw_model = self.model.module if self.ddp else self.model
-        checkpoint = {
-            "model": raw_model.state_dict(),
-            "optimizer": self.optimizer.state_dict(),
-            "model_args": raw_model.params,
-            "iter_num": self.iter_num,
-            "best_val_loss": self.best_val_loss,
-            "config": self.config.__dict__,
-        }
-        
-        # Save in the run directory
-        os.makedirs(self.run_dir, exist_ok=True)
-        # Update a rolling 'ckpt.pt' and also an iter-stamped file for history
-        ckpt_latest = os.path.join(self.run_dir, "ckpt.pt")
-        ckpt_iter = os.path.join(self.run_dir, f"ckpt_{self.iter_num:07d}.pt")
-        torch.save(checkpoint, ckpt_latest)
-        torch.save(checkpoint, ckpt_iter)
-        
-        # Update a simple pointer file in base out_dir for discovery
-        try:
-            with open(os.path.join(self.config.out_dir, "LATEST_RUN.txt"), "w") as fp:
-                fp.write(self.run_dir)
-        except Exception:
-            pass
-        LOG.info(f"Checkpoint saved to {ckpt_latest} and {ckpt_iter}")
-        
-        # Save MTP modules separately if available
-        if hasattr(raw_model, 'multi_token_predictor') and raw_model.multi_token_predictor is not None:
-            mtp_checkpoint = {
-                "mtp_state_dict": raw_model.multi_token_predictor.state_dict(),
-                "model_args": raw_model.params,
-                "iter_num": self.iter_num,
-                "best_val_loss": self.best_val_loss,
-                "config": self.config.__dict__,
-            }
-            
-            mtp_ckpt_path = os.path.join(self.run_dir, "mtp_ckpt.pt")
-            torch.save(mtp_checkpoint, mtp_ckpt_path)
-            LOG.info(f"MTP module checkpoint saved to {mtp_ckpt_path}")
-            
-            # Also save individual MTP components for fine-grained control
-            mtp_components = {}
-            mtp_module = raw_model.multi_token_predictor
-            
-            if hasattr(mtp_module, 'mtp_transformer_block'):
-                mtp_components['transformer_block'] = mtp_module.mtp_transformer_block.state_dict()
-                
-            if hasattr(mtp_module, 'output_heads') and mtp_module.output_heads is not None:
-                mtp_components['output_heads'] = mtp_module.output_heads.state_dict()
-                
-            if hasattr(mtp_module, 'projection'):
-                mtp_components['projection'] = mtp_module.projection.state_dict()
-                
-            if mtp_components:
-                mtp_components_path = os.path.join(self.run_dir, "mtp_components.pt")
-                torch.save(mtp_components, mtp_components_path)
-                LOG.info(f"MTP components saved to {mtp_components_path}")
 
     def setup_output_dirs(self):
         """Create and register a unique run directory under out_dir and write metadata/pointers.
@@ -1282,9 +1238,7 @@ class SabiYarnTrainer:
         
         while True:
             # Update learning rate
-            if self.lr_manually_reduced:
-                continue
-            else:
+            if not self.lr_manually_reduced:
                 lr = self.get_lr(self.iter_num) if self.config.decay_lr else self.config.learning_rate
                 for param_group in self.optimizer.param_groups:
                     param_group["lr"] = lr

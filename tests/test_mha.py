@@ -7,20 +7,23 @@ project_root = os.path.join(os.path.dirname(__file__), '..')
 sys.path.insert(0, project_root)
 
 # Import as proper package
-from sabiyarn.MHA import SelfAttention, SelfAttnArgs, precompute_freqs_cis
+from sabiyarn.MHA import CausalSelfAttention, SelfAttnArgs
+from sabiyarn.utils import precompute_freqs_cis
 
 def test_mha():
     # Create smaller config for testing
     args = SelfAttnArgs(
         dim=512,
         n_heads=8,
-        n_kv_heads=4,  # Test grouped query attention
         max_batch_size=2,
-        max_seq_len=64
+        max_seq_len=64,
+        use_kv_cache = False,
+        bias = False,
+        dropout = 0.1
     )
     
     # Initialize model
-    model = SelfAttention(args)
+    model = CausalSelfAttention(args)
     
     # Create test input
     batch_size = 1

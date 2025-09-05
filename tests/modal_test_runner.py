@@ -41,7 +41,7 @@ def run_tests_on_gpu():
     sys.path.insert(0, project_root)
     
     # Now import the GPU-dependent modules (this happens on GPU)
-    from sabiyarn.grouped_query_attention import GQAArgs
+    from sabiyarn.GQA import GQAArgs
     from sabiyarn.model import ModelArgs, SabiYarn, AttentionType
     from sabiyarn.MLA import MLAConfig
     from sabiyarn.differential_attention import DiffAttnArgs
