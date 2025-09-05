@@ -590,6 +590,7 @@ def run_tests_on_gpu():
     if passed_tests == total_tests:
         print("\n🎉 **All Model Initialization Tests Passed on Modal GPU!**")
         print("\n**Architecture Features Validated:**")
+        print("✅Grouped Query Attention support")
         print("✅ Multi-Head Attention (MHA) support")
         print("✅ Differential Attention support")
         print("✅ Multi-Head Latent Attention (MLA) support")

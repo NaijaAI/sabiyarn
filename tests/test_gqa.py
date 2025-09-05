@@ -60,6 +60,6 @@ def test_gqa():
 if __name__ == "__main__":
     success = test_gqa()
     if success:
-        print("✓ MHA test passed!")
+        print("✓GQA test passed!")
     else:
-        print("✗ MHA test failed!")
+        print("✗GQA test failed!")
