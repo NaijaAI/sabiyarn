@@ -124,7 +124,10 @@ def run_tests_on_gpu():
             config = ModelArgs(
                 dim=256,
                 n_heads=8,
+                n_layers =2,
                 vocab_size=1000,
+                max_seq_len = 32,
+                max_batch_size=2,
                 attention_type=AttentionType.SELF_ATTENTION,
                 mha_config = mha_config
             )
@@ -218,14 +221,14 @@ def run_tests_on_gpu():
                 n_kv_heads=4,
                 n_heads=8,
                 max_seq_len=32,
-                max_batch_size=32
+                max_batch_size=2
             )
             config = ModelArgs(
                 dim=384,
                 n_layers=2,
                 n_heads=8,
                 vocab_size=1000,
-                max_batch_size=32,
+                max_batch_size=2,
                 max_seq_len=32,
                 attention_type=AttentionType.GQA,
                 gqa_config=gqa_config
