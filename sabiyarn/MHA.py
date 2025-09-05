@@ -48,7 +48,7 @@ class CausalSelfAttention(nn.Module):
                 config.max_batch_size,
                 config.max_seq_len,
                 self.n_head,
-                config.dim // config.n_head
+                config.dim // config.n_heads
             )
             )
             
@@ -56,8 +56,8 @@ class CausalSelfAttention(nn.Module):
             (
                 config.max_batch_size,
                 config.max_seq_len,
-                config.n_head,
-                config.dim // config.n_head
+                self.n_head,
+                config.dim // config.n_heads
             )
         )
 

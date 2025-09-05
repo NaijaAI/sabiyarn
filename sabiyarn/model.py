@@ -663,7 +663,7 @@ class SabiYarn(nn.Module):
             # MLA uses its own frequency computation
             freqs_cis = self.freqs_cis
             
-        elif self.freq_cis is not None:
+        elif self.freqs_cis is not None:
             # For non-MLA attention, slice pre-computed frequencies
             # if self.freqs_cis is not None:
             self.freqs_cis = self.freqs_cis.to(h.device)
