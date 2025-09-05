@@ -1,6 +1,6 @@
 from torch import nn
 import torch
-from .model import RMSNorm, TransformerBlock
+from .model import RMSNorm, TransformerBlock, ModelArgs
 from typing import Optional
 class MultiTokenPredictor(nn.Module):
     """
