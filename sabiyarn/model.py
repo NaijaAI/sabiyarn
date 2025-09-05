@@ -727,11 +727,18 @@ class SabiYarn(nn.Module):
         if multi_token_logits is not None:
             return hidden_states, logits, multi_token_logits
         
-        return hidden_states, logits
+        return hidden_states, logits, None
      
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, use_multi_token=False):
+    def generate(self,
+            idx,
+            max_new_tokens,
+            temperature: float = 0.8,
+            top_k: int = None,
+            use_multi_token: bool = False,
+            end_of_text_token_id: int = 1,
+            ):
         """
         Generate text using the model.
         Args:
@@ -741,7 +748,17 @@ class SabiYarn(nn.Module):
             top_k: Top-k sampling parameter
             use_multi_token: Whether to use multi-token prediction for faster generation
         """
-        for _ in range(max_new_tokens):
+        # forward the model to get the logits for the index in the sequence
+        bsz, seq_len = idx.size()
+        prev_pos = 0
+        
+        # Keep track of finished sequences
+        finished = torch.zeros(bsz, dtype=torch.bool, device=idx.device)
+        
+        # forward the model to get the logits for the index in the sequence
+        return_multi_token = (use_multi_token and self.use_multi_token)
+        
+        for cur_pos in range(seq_len, max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = (
                 idx
@@ -749,13 +766,8 @@ class SabiYarn(nn.Module):
                 else idx[:, -self.params.max_seq_len :]
             )
             
-            # forward the model to get the logits for the index in the sequence
-            if use_multi_token and self.use_multi_token:
-                _, logits, _ = self(idx_cond, start_pos=0, return_multi_token=True)
+            _, logits, _ = self(idx_cond[:, prev_pos: cur_pos], start_pos=prev_pos, return_multi_token=return_multi_token)
                 
-            else:
-                _, logits = self(idx_cond, start_pos=0)
-              
             logits = logits[:, -1, :] / temperature
             
             if top_k is not None:
@@ -763,9 +775,23 @@ class SabiYarn(nn.Module):
                 logits[logits < v[:, [-1]]] = -float("Inf")
             probs = F.softmax(logits, dim=-1)
             idx_next = torch.multinomial(probs, num_samples=1)
+            
+            # For finished sequences, force <eos> token to repeat
+            if end_of_text_token_id is not None:
+                idx_next = torch.where(
+                    finished.unsqueeze(1), 
+                    torch.tensor(end_of_text_token_id, device=idx.device).expand_as(idx_next),
+                    idx_next,
+                )
+                finished |= (idx_next.squeeze(1) == end_of_text_token_id)
+
+            # Append to sequence
             idx = torch.cat((idx, idx_next), dim=1)
 
+            # If all sequences finished, stop early
+            if finished.all():
+                break
+
+            prev_pos = cur_pos
+
         return idx
-
-
-
