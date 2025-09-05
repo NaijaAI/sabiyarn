@@ -1,6 +1,7 @@
 from torch import nn
 import torch
 from .model import RMSNorm, TransformerBlock
+from typing import Optional
 class MultiTokenPredictor(nn.Module):
     """
     Multi-Token Prediction module following DeepSeek's architecture.
