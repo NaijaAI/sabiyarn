@@ -102,7 +102,7 @@ class GroupedQueryAttention(nn.Module):
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis)
         if self.use_kv_cache:
             self.cache_k = self.cache_k.to(xq)
-            self.cache_v = self.cache_v.to(xv)
+            self.cache_v = self.cache_v.to(xq)
 
             self.cache_k[:bsz, start_pos: start_pos + seq_len] = xk
             self.cache_v[:bsz, start_pos: start_pos + seq_len] = xv
