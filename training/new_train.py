@@ -165,7 +165,7 @@ class TrainingConfig:
     mask_id_value: int = 1  # ID value for custom masking, this is for the end of text token id value from our tokenizer which is 1 for llama 
     
     # Data
-    dataset: str = "Aletheia-ng/bloomberg-news-articles-pretraining-dataset" # "semran1/finewebedu-dedup-600k"
+    dataset: str = "Aletheia-ng/pretrain_test" # "semran1/finewebedu-dedup-600k"
     train_data_path: str = "./training.bin"
     eval_data_path: str = "./validation.bin"
     
