@@ -100,7 +100,8 @@ class GroupedQueryAttention(nn.Module):
         xv = xv.view(bsz, seq_len, self.n_kv_heads, self.head_dim)
 
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis)
-        if self.use_kv_cache:
+        
+        if self.use_kv_cache and not self.training:
             self.cache_k = self.cache_k.to(xq)
             self.cache_v = self.cache_v.to(xq)
 

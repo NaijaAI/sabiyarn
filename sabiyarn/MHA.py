@@ -79,7 +79,7 @@ class CausalSelfAttention(nn.Module):
         q = q.transpose(1, 2) # (B, nh, T, hs)
         k= k.transpose(1, 2) # (B, nh, T, hs)
         
-        if self.use_kv_cache:
+        if self.use_kv_cache and not self.training:
             self.cache_k = self.cache_k.to(q)
             self.cache_v = self.cache_v.to(q)
 
