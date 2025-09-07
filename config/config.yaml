@@ -26,7 +26,7 @@ wandb:
 
 # data
 data: 
-  dataset : 
+  datasets: 
     - "Aletheia-ng/pretrain_data"
     - "Aletheia-ng/pretrain_data2"
     - "Aletheia-ng/pretrain_data3"
@@ -68,7 +68,8 @@ model:
   tokenizer:
     name: "Aletheia-ng/SabiYarn_test"
     num_proc: 64
-    process_one_file_at_a_time: True
+    process_file_one_at_a_time: true
+
 # adamw optimizer
 optimizer:
   name : "adam"

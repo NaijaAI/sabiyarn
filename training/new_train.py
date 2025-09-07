@@ -67,10 +67,10 @@ LOG = structlog.stdlib.get_logger()
 class TrainingConfig:
     # Model Architecture
     attention_type: str = "MLA"  # "self_attention", "differential_attention", "MLA"
-    dim: int = 2048
-    n_layers: int = 20
-    n_heads: int = 16
-    n_kv_heads: Optional[int] = 8
+    dim: int = 256
+    n_layers: int = 10
+    n_heads: int = 4
+    n_kv_heads: Optional[int] = 2
     vocab_size: int = 64000
     max_seq_len: int = 1024
     max_batch_size: int = 32
@@ -88,10 +88,10 @@ class TrainingConfig:
     
     # MoE Configuration (only with MLA)
     use_moe: bool = True
-    n_routed_experts: int = 16
-    n_activated_experts: int = 8
-    moe_inter_dim: int = 2048
-    n_shared_experts: int = 1
+    n_routed_experts: int = 3
+    n_activated_experts: int = 2
+    moe_inter_dim: int = 1024
+    n_shared_experts: int = 2
     score_function: str = "sigmoid"
     bias_update_speed: float = 0.001
     moe_aux_loss_weight: float = 0.001  # Weight for MoE sequence-wise auxiliary loss
@@ -107,6 +107,7 @@ class TrainingConfig:
     layer_sharing_strategy: str = "immediate"
     layer_sharing: bool = True
     n_unique_layers: Optional[int] = 10
+    layer_sharing_strategy  = 'immediate'
     
     # Other model features
     use_logic_network: bool = False
@@ -702,7 +703,7 @@ class SabiYarnTrainer:
             # Layer sharing
             layer_sharing=self.config.layer_sharing,
             n_unique_layers=self.config.n_unique_layers,
-            layer_sharing_strategy=self.config.layer_sharing_strategy,
+            layer_sharing_strategy = self.config.layer_sharing_strategy,
             
             # Other features
             logic_network=self.config.use_logic_network,
@@ -1135,6 +1136,7 @@ class SabiYarnTrainer:
                     wandb.log(eval_metrics, step=self.iter_num)
                     
                 if losses["val"] < self.best_val_loss or self.config.always_save_checkpoint:
+         
                     self.best_val_loss = losses["val"]
                     if self.iter_num > 0:
                         self.save_checkpoint()
