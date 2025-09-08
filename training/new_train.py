@@ -208,8 +208,10 @@ class TrainingConfig:
     
     # Distributed training (auto-detected by model)
     auto_detect_distributed: bool = True
+    seed =42
+    n_samples = 6000000 # Number of samples to use for training from dataset.
 
-
+# set seed
 
 class SabiYarnTrainer:   
     def __init__(self, config: TrainingConfig):
@@ -230,7 +232,7 @@ class SabiYarnTrainer:
         self.setup_model()
         self.setup_optimizer()
         self.setup_compilation()
-        
+        torch.seed(config.seed)
         # Training state
         # Only initialize defaults when starting from scratch.
         # When resuming, these are loaded inside setup_model().
@@ -353,12 +355,11 @@ class SabiYarnTrainer:
         """Check W&B authentication and provide helpful guidance."""
         try:
             # Try to get API key from various sources
-            api_key = "3d4f49c65c423034b92482c50338953c67f62254" 
-            # (
-            #     os.getenv("WANDB_API_KEY") or 
-            #     wandb.api.api_key or
-            #     None
-            # )
+            api_key = (
+                os.getenv("WANDB_API_KEY") or 
+                wandb.api.api_key or
+                None
+            ) #"3d4f49c65c423034b92482c50338953c67f62254"
             
             if not api_key:
                 LOG.warning("⚠️ W&B API key not found!")
@@ -620,7 +621,7 @@ class SabiYarnTrainer:
             except Exception:
                 LOG.info("Using existing bins (could not read counts)")
         else:
-            prepare.run([self.config.dataset], os.cpu_count())
+            prepare.run([self.config.dataset], os.cpu_count(), self.config.n_samples, self.config.seed)
         
         # Initialize tokenizer if available
         self.tokenizer = None

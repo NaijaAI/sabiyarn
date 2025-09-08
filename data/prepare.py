@@ -109,7 +109,7 @@ def write_to_memmap(dset, filename, dtype, log_prefix=""):
     LOG.info(f"{log_prefix} write to bin file complete...")
 
 
-def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc):
+def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc, n_samples=5000000, seed=42):
     """
     Main function to process and tokenize datasets, saving to memory-mapped files.
     """
@@ -178,6 +178,11 @@ def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc):
                     raise
             # By default only contains the 'train' split, so create a test split
             train_split = loaded_dataset["train"]
+            n_samples = min(n_samples, len(train_split)) if (n_samples != -1 or n_samples is not None) else len(train_split)  # number of samples you want
+            seed = seed # fixed seed for reproducibility
+
+            # Shuffle and select n samples
+            train_split = train_split.shuffle(seed=seed).select(range(n_samples))
             dataset_length = len(train_split)
             test_size = calculate_test_size(dataset_length)
 
