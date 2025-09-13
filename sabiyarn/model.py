@@ -14,7 +14,7 @@ from .differential_attention import DiffAttention, DiffAttnArgs
 from .MLA import MLA, MLAConfig #, ColumnParallelLinear, RowParallelLinear, linear
 from .MHA import CausalSelfAttention, SelfAttnArgs
 from .GQA import GroupedQueryAttention, GQAArgs
-from .multitoken_predictor import MultiTokenPredictor
+
 
 
 class AttentionType(str, Enum):
@@ -184,6 +184,7 @@ class ModelArgs:
     n_heads: int = 32
     n_kv_heads: Optional[int] = None
     bias: bool = False
+    dropout: float = 0.1
     vocab_size: int = -1  # defined later by tokenizer
     multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     ffn_dim_multiplier: Optional[float] = None
@@ -575,7 +576,7 @@ class SabiYarn(nn.Module):
             from .utils import precompute_freqs_cis
             self.freqs_cis = precompute_freqs_cis(
                 self.params.mha_config.dim // self.params.mha_config.n_heads,
-                self.params.mha_config.max_seq_len * 2,
+                self.params.max_seq_len * 2,
             )
         elif params.attention_type == AttentionType.DIFFERENTIAL_ATTENTION:
             if params.diff_attn_config is None:
@@ -663,6 +664,7 @@ class SabiYarn(nn.Module):
             freqs_cis = self.freqs_cis
             
         elif self.freqs_cis is not None:
+        elif self.freqs_cis is not None:
             # For non-MLA attention, slice pre-computed frequencies
             # if self.freqs_cis is not None:
             self.freqs_cis = self.freqs_cis.to(h.device)
@@ -727,11 +729,18 @@ class SabiYarn(nn.Module):
         if multi_token_logits is not None:
             return hidden_states, logits, multi_token_logits
         
-        return hidden_states, logits
+        return hidden_states, logits, None
      
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, use_multi_token=False):
+    def generate(self,
+            idx,
+            max_new_tokens,
+            temperature: float = 0.8,
+            top_k: int = None,
+            use_multi_token: bool = False,
+            end_of_text_token_id: int = 1,
+            ):
         """
         Generate text using the model.
         Args:
@@ -741,7 +750,17 @@ class SabiYarn(nn.Module):
             top_k: Top-k sampling parameter
             use_multi_token: Whether to use multi-token prediction for faster generation
         """
-        for _ in range(max_new_tokens):
+        # forward the model to get the logits for the index in the sequence
+        bsz, seq_len = idx.size()
+        prev_pos = 0
+        
+        # Keep track of finished sequences
+        finished = torch.zeros(bsz, dtype=torch.bool, device=idx.device)
+        
+        # forward the model to get the logits for the index in the sequence
+        return_multi_token = (use_multi_token and self.use_multi_token)
+        
+        for cur_pos in range(seq_len, max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = (
                 idx
@@ -749,13 +768,8 @@ class SabiYarn(nn.Module):
                 else idx[:, -self.params.max_seq_len :]
             )
             
-            # forward the model to get the logits for the index in the sequence
-            if use_multi_token and self.use_multi_token:
-                _, logits, _ = self(idx_cond, start_pos=0, return_multi_token=True)
+            _, logits, _ = self(idx_cond[:, prev_pos: cur_pos], start_pos=prev_pos, return_multi_token=return_multi_token)
                 
-            else:
-                _, logits = self(idx_cond, start_pos=0)
-              
             logits = logits[:, -1, :] / temperature
             
             if top_k is not None:
@@ -763,9 +777,117 @@ class SabiYarn(nn.Module):
                 logits[logits < v[:, [-1]]] = -float("Inf")
             probs = F.softmax(logits, dim=-1)
             idx_next = torch.multinomial(probs, num_samples=1)
+            
+            # For finished sequences, force <eos> token to repeat
+            if end_of_text_token_id is not None:
+                idx_next = torch.where(
+                    finished.unsqueeze(1), 
+                    torch.tensor(end_of_text_token_id, device=idx.device).expand_as(idx_next),
+                    idx_next,
+                )
+                finished |= (idx_next.squeeze(1) == end_of_text_token_id)
+
+            # Append to sequence
             idx = torch.cat((idx, idx_next), dim=1)
+
+            # If all sequences finished, stop early
+            if finished.all():
+                break
+
+            prev_pos = cur_pos
 
         return idx
 
+class MultiTokenPredictor(nn.Module):
+    """
+    Multi-Token Prediction module following DeepSeek's architecture.
+    Uses a single transformer block as per the original design.
+    """
+    def __init__(self, args: 'ModelArgs'):
+        super().__init__()
+        self.dim = args.dim
+        self.num_prediction_tokens = args.num_prediction_tokens
+        
+        # RMS norms for input embedding and transformer output
+        self.input_embedding_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        self.transformer_output_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        
+        # Linear projection after concatenation
+        # Input: concatenated [normalized_embedding, normalized_transformer_output]
+        # Output: projected features for MTP transformer
+        projection_input_dim = 2 * args.dim  # Concatenated features
+        self.projection = nn.Linear(projection_input_dim, args.dim, bias=False)
+        
+        # Single MTP transformer block - use TransformerBlock for consistent initialization
+        self.mtp_transformer_block = TransformerBlock(0, args)
+        
+        # Final norm
+        self.output_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        
+        # Multi-token output heads (if not sharing embeddings)
+        if not args.mtp_share_embeddings:
+            self.output_heads = nn.ModuleList([
+                nn.Linear(args.dim, args.vocab_size, bias=False)
+                for _ in range(self.num_prediction_tokens)
+            ])
+        else:
+            self.output_heads = None
+    
+    def forward(self, 
+                input_embeddings: torch.Tensor, 
+                transformer_output: torch.Tensor,
+                start_pos: int,
+                freqs_cis: torch.Tensor,
+                lm_head: Optional[nn.Linear] = None,
+                mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Args:
+            input_embeddings: (batch_size, seq_len, dim) - Original input embeddings
+            transformer_output: (batch_size, seq_len, dim) - Output from main transformer
+            start_pos: Starting position for attention caching
+            freqs_cis: Frequency embeddings for rotary attention
+            lm_head: Shared LM head if using shared embeddings
+            mask: Attention mask
+            
+        Returns:
+            multi_token_logits: (batch_size, seq_len, num_prediction_tokens, vocab_size)
+        """
+        batch_size, seq_len, dim = input_embeddings.shape
+        
+        # Step 1: Normalize input embedding and transformer output
+        norm_input_emb = self.input_embedding_norm(input_embeddings)
+        norm_transformer_out = self.transformer_output_norm(transformer_output)
+        
+        # Step 2: Concatenate normalized features
+        concatenated = torch.cat([norm_input_emb, norm_transformer_out], dim=-1)
+        
+        # Step 3: Linear projection
+        projected = self.projection(concatenated)
+        
+        # Step 4: Pass through single MTP transformer block
+        mtp_output = self.mtp_transformer_block(projected, start_pos, freqs_cis, mask)
+        
+        # Step 5: Final normalization
+        mtp_output = self.output_norm(mtp_output)
+        
+        # Step 6: Generate multi-token predictions
+        if self.output_heads is None and lm_head is not None:
+            # Use shared LM head - need to distinguish different prediction positions
+            multi_token_logits = []
+            for i in range(self.num_prediction_tokens):
 
-
+                logits = lm_head(mtp_output)
+                multi_token_logits.append(logits)
+            multi_token_logits = torch.stack(multi_token_logits, dim=2)
+        else:
+            # Use separate heads for each prediction position
+            if self.output_heads is None:
+                raise ValueError("output_heads should not be None when not sharing embeddings")
+            
+            multi_token_logits = []
+            for i, head in enumerate(self.output_heads):
+                logits = head(mtp_output)
+                multi_token_logits.append(logits)
+            multi_token_logits = torch.stack(multi_token_logits, dim=2)
+        
+        return multi_token_logits

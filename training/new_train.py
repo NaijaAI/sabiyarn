@@ -85,22 +85,22 @@ clear_cuda()
 @dataclass
 class TrainingConfig:
     # Model Architecture
-    attention_type: AttentionType = AttentionType.MLA #"self_attention" , "differential_attention", "MLA"
-    dim: int = 256
-    n_layers: int = 10
+    attention_type: AttentionType = AttentionType.GQA #"self_attention" , "differential_attention", "MLA"
+    dim: int = 768
+    n_layers: int = 20
     n_heads: int = 8
     n_kv_heads: Optional[int] = 4
     vocab_size: int = 64000
     max_seq_len: int = 1024
-    max_batch_size: int = 14 #8
-    train_batch_size: int = 14 #8
-    bias: bool = False
+    max_batch_size: int = 8 #8
+    train_batch_size: int = 8 #8
+    bias: bool = True
     dropout: float= 0.1
     use_kv_cache: bool = False
     # Attention-specific configs
     use_mla: bool = False
     use_differential_attention: bool = False
-    
+    use_kv_cache = True
     # MLA Configuration
     mla_q_lora_rank: int = 512
     mla_kv_lora_rank: int = 256
@@ -129,7 +129,7 @@ class TrainingConfig:
     # Layer Sharing (MobileLLM-style)
     layer_sharing_strategy: str = "immediate"
     layer_sharing: bool = True
-    n_unique_layers: Optional[int] = 5
+    n_unique_layers: Optional[int] = 10
     layer_sharing_strategy  = 'immediate'
     
     # Other model features
@@ -141,9 +141,9 @@ class TrainingConfig:
     
     # Training Configuration
     
-    gradient_accumulation_steps: int = 10   # 5 * 8
+    gradient_accumulation_steps: int = 20   # 5 * 8
     learning_rate: float = 3e-4
-    max_iters: int = 600000
+    max_iters: int = 50000
     weight_decay: float = 1e-1
     beta1: float = 0.9
     beta2: float = 0.95
@@ -151,9 +151,9 @@ class TrainingConfig:
     
     # Learning rate schedule
     decay_lr: bool = True
-    warmup_iters: int = 100 #1500
-    lr_decay_iters: int = 600000
-    min_lr: float = 1e-5 # 6e-5
+    warmup_iters: int = 400 #1500
+    lr_decay_iters: int = 50000
+    min_lr: float = 6e-5 # 6e-5
     
     # Optimizer
     optimizer_type: str = "adamw"  # "adam", "adamw", "sgd", "adam8bit"
@@ -166,9 +166,9 @@ class TrainingConfig:
     mask_id_value: int = 1  # ID value for custom masking, this is for the end of text token id value from our tokenizer which is 1 for llama 
     
     # Data
-    dataset: str = "Aletheia-ng/pretrain_test"
-    train_data_path: str = "./train.bin"
-    eval_data_path: str = "./val.bin"
+    dataset: str = "Aletheia-ng/pretrain_test" # "semran1/finewebedu-dedup-600k"
+    train_data_path: str = "./training.bin"
+    eval_data_path: str = "./validation.bin"
     
     # Logging and checkpointing
     out_dir: str = "out"  # Base directory that will contain per-run subfolders
@@ -187,7 +187,7 @@ class TrainingConfig:
     wandb_project: str = "sabiyarn-new-training"
     wandb_run_name: str = "modern_training"
     wandb_tags: list = field(default_factory=lambda: ["MLA", "MoE", "MTP", "SabiYarn"])
-    save_model_to_wandb: bool = True
+    save_model_to_wandb: bool = False
     
     # Advanced monitoring
     log_grad_norm: bool = True
@@ -198,7 +198,7 @@ class TrainingConfig:
     monitor_interval: int = 50  # Log detailed metrics every N steps
     
     # Generation testing
-    display_model_output_iter: int = 128
+    display_model_output_iter: int = 32
     enable_generation_during_training: bool = True
     generation_max_tokens: int = 80
     
@@ -209,7 +209,10 @@ class TrainingConfig:
     
     # Distributed training (auto-detected by model)
     auto_detect_distributed: bool = True
+    seed =42
+    n_samples = 6000000 # Number of samples to use for training from dataset.
 
+# set seed
 
 class SabiYarnTrainer:   
     def __init__(self, config: TrainingConfig):
@@ -230,7 +233,7 @@ class SabiYarnTrainer:
         self.setup_model()
         self.setup_optimizer()
         self.setup_compilation()
-        
+        torch.seed(config.seed)
         # Training state
         # Only initialize defaults when starting from scratch.
         # When resuming, these are loaded inside setup_model().
@@ -353,12 +356,11 @@ class SabiYarnTrainer:
         """Check W&B authentication and provide helpful guidance."""
         try:
             # Try to get API key from various sources
-            api_key = "3d4f49c65c423034b92482c50338953c67f62254" 
-            # (
-            #     os.getenv("WANDB_API_KEY") or 
-            #     wandb.api.api_key or
-            #     None
-            # )
+            api_key = (
+                os.getenv("WANDB_API_KEY") or 
+                wandb.api.api_key or
+                None
+            ) #"3d4f49c65c423034b92482c50338953c67f62254"
             
             if not api_key:
                 LOG.warning("⚠️ W&B API key not found!")
@@ -620,7 +622,7 @@ class SabiYarnTrainer:
             except Exception:
                 LOG.info("Using existing bins (could not read counts)")
         else:
-            prepare.run(["Aletheia-ng/pretrain_test"], os.cpu_count())
+            prepare.run([self.config.dataset], os.cpu_count(), self.config.n_samples, self.config.seed)
         
         # Initialize tokenizer if available
         self.tokenizer = None
@@ -937,9 +939,10 @@ class SabiYarnTrainer:
                         targets.view(-1),
                         ignore_index=MASK
                     )
+            return total_loss, hidden_states             
         else:
             # Standard training without MTP
-            hidden_states, logits = self.model(tokens, start_pos=0, mask=mask)
+            hidden_states, logits, _ = self.model(tokens, start_pos=0, mask=mask)
             
             if self.config.use_cut_cross_entropy:
                 raw_model = self.model.module if self.ddp else self.model
@@ -958,7 +961,7 @@ class SabiYarnTrainer:
                     ignore_index=MASK
                 )
                 
-        return total_loss, hidden_states if self.model.use_multi_token else logits
+        return total_loss, logits
         
     @torch.no_grad()
     def estimate_loss(self):
@@ -994,31 +997,33 @@ class SabiYarnTrainer:
         return self.config.min_lr + coeff * (self.config.learning_rate - self.config.min_lr)
         
     def generate_sample_text(self, tokens: torch.Tensor):
-        """Generate sample text for monitoring training progress."""
-        if self.tokenizer is None:
-            return
-            
-        try:
-            with torch.no_grad():
-                generated = self.model.generate(
-                    tokens[:1],  # Use first sample
-                    max_new_tokens=self.config.generation_max_tokens,
-                    use_multi_token=self.model.use_multi_token
-                )
-                
-            input_text = self.tokenizer.decode(tokens[0].tolist(), skip_special_tokens=False)
-            output_text = self.tokenizer.decode(generated[0].tolist(), skip_special_tokens=False)
-            
-            LOG.info("=" * 50)
-            LOG.info(f"Input: {input_text[-100:]}")
-            LOG.info(f"Generated: {output_text[len(input_text):]}")
-            LOG.info("=" * 50)
-            
-        except Exception as e:
-            LOG.warning(f"Text generation failed: {e}")
-        finally:
+            """Generate sample text for monitoring training progress."""
+            if self.tokenizer is None:
+                return
+            for i in range(min(8, len(tokens))):    
+                try:
+                    with torch.no_grad():
+                        generated = self.model.generate(
+                            tokens[i].unsqueeze(0),  # Use first sample
+                            max_new_tokens=self.config.generation_max_tokens,
+                            use_multi_token=self.model.use_multi_token
+                        )
+                        
+                    input_text = self.tokenizer.decode(tokens[0].tolist(), skip_special_tokens=False)
+                    output_text = self.tokenizer.decode(generated[0].tolist(), skip_special_tokens=False)
+                    
+                    LOG.info("=" * 100)
+                    LOG.info(f"Input: {input_text[-500:]}")
+                    LOG.info(f"Generated: {output_text[len(input_text):]}")
+                    LOG.info("=" * 100)
+
+                except Exception as e:
+                    LOG.warning(f"Text generation failed: {e}")
+                finally:
+                    continue
+                    
             self.model.train()
-    
+        
 
     def save_checkpoint_wandb(self):
         """ Save training checkpoint to wandb."""
@@ -1034,13 +1039,15 @@ class SabiYarnTrainer:
             "iter_num": self.iter_num,
             "best_val_loss": self.best_val_loss,
             "config": self.config.__dict__,
+            "transformers version": transformers.__version__,
+            "pytorch version": torch.__version__
         }
         os.makedirs(self.run_dir, exist_ok=True)
         # Update a rolling 'ckpt.pt' and also an iter-stamped file for history
         ckpt_latest = os.path.join(self.run_dir, "ckpt.pt")
         ckpt_iter = os.path.join(self.run_dir, f"ckpt_{self.iter_num:07d}.pt")
         torch.save(checkpoint, ckpt_latest)
-        torch.save(checkpoint, ckpt_iter)
+        # torch.save(checkpoint, ckpt_iter)
 
         try:
             with open(os.path.join(self.config.out_dir, "LATEST_RUN.txt"), "w") as fp:

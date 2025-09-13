@@ -46,18 +46,18 @@ class CausalSelfAttention(nn.Module):
             self.cache_k = torch.zeros(
             (
                 config.max_batch_size,
-                config.max_seq_len,
                 self.n_head,
-                config.dim // config.n_head
+                config.max_seq_len,
+                config.dim // config.n_heads
             )
             )
             
             self.cache_v = torch.zeros(
             (
                 config.max_batch_size,
-                config.max_seq_len,
-                config.n_head,
-                config.dim // config.n_head
+                self.n_head,
+                config.max_seq_len,                
+                config.dim // config.n_heads
             )
         )
 
@@ -70,27 +70,33 @@ class CausalSelfAttention(nn.Module):
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        k = k.view(B, T, self.n_head, C // self.n_head)
+        q = q.view(B, T, self.n_head, C // self.n_head)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
         #apply rotary embeddings
         q, k = apply_rotary_emb(q, k, freqs_cis)
+        q = q.transpose(1, 2) # (B, nh, T, hs)
+        k= k.transpose(1, 2) # (B, nh, T, hs)
         
-        if self.use_kv_cache:
-            self.cache_k = self.cache_k.to(k)
-            self.cache_v = self.cache_v.to(v)
+        if self.use_kv_cache and not self.training:
+            self.cache_k = self.cache_k.to(q)
+            self.cache_v = self.cache_v.to(q)
 
-            self.cache_k[:B, start_pos: start_pos + T] = k
-            self.cache_v[:B, start_pos: start_pos + T] = v
+            self.cache_k[:B, :, start_pos: start_pos + T] = k
+            self.cache_v[:B,:, start_pos: start_pos + T] = v
 
-            k = self.cache_k[:B, :start_pos + T]
-            v = self.cache_v[:B, :start_pos + T]
+            k = self.cache_k[:B, :, :start_pos + T]
+            v = self.cache_v[:B, :, :start_pos + T]
         
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=self.dropout if self.training else 0, is_causal=True)
+            if mask is not None:
+                y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=self.dropout if self.training else 0)
+            else:
+                y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+                
         else:
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))

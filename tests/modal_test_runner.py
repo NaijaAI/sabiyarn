@@ -42,6 +42,7 @@ def run_tests_on_gpu():
     
     # Now import the GPU-dependent modules (this happens on GPU)
     from sabiyarn.GQA import GQAArgs
+    from sabiyarn.MHA import SelfAttnArgs
     from sabiyarn.model import ModelArgs, SabiYarn, AttentionType
     from sabiyarn.MLA import MLAConfig
     from sabiyarn.differential_attention import DiffAttnArgs
@@ -110,24 +111,33 @@ def run_tests_on_gpu():
         
         try:
             # Create MHA configuration
-            config = ModelArgs(
-                dim=256,
-                n_layers=2,
+            mha_config = SelfAttnArgs(
+                dim= 256,
                 n_heads=8,
-                n_kv_heads=4,
-                vocab_size=1000,
                 max_batch_size=2,
                 max_seq_len=32,
-                attention_type=AttentionType.SELF_ATTENTION
+                use_kv_cache= True,
+                bias = False,
+                dropout = 0.1,
             )
             
+            config = ModelArgs(
+                dim=256,
+                n_heads=8,
+                n_layers =2,
+                vocab_size=1000,
+                max_seq_len = 32,
+                max_batch_size=2,
+                attention_type=AttentionType.SELF_ATTENTION,
+                mha_config = mha_config
+            )
             # Initialize model
             model = SabiYarn(config)
             print(f"✅ MHA model created: {model.get_model_size()}")
             
             # Test forward pass
             tokens = torch.randint(0, 1000, (1, 16))
-            hidden_states, logits = model(tokens, start_pos=0)
+            hidden_states, logits, _ = model(tokens, start_pos=0)
             
             print(f"   Input: {tokens.shape}")
             print(f"   Hidden states: {hidden_states.shape}")
@@ -172,7 +182,7 @@ def run_tests_on_gpu():
                 max_batch_size=2,
                 max_seq_len=32,
                 attention_type=AttentionType.DIFFERENTIAL_ATTENTION,
-                diff_attn_args=diff_args
+                diff_attn_config=diff_args
             )
             
             # Initialize model
@@ -181,7 +191,7 @@ def run_tests_on_gpu():
             
             # Test forward pass
             tokens = torch.randint(0, 1000, (1, 16))
-            hidden_states, logits = model(tokens, start_pos=0)
+            hidden_states, logits, _ = model(tokens, start_pos=0)
             
             print(f"   Input: {tokens.shape}")
             print(f"   Hidden states: {hidden_states.shape}")
@@ -211,14 +221,14 @@ def run_tests_on_gpu():
                 n_kv_heads=4,
                 n_heads=8,
                 max_seq_len=32,
-                max_batch_size=32
+                max_batch_size=2
             )
             config = ModelArgs(
                 dim=384,
                 n_layers=2,
                 n_heads=8,
                 vocab_size=1000,
-                max_batch_size=32,
+                max_batch_size=2,
                 max_seq_len=32,
                 attention_type=AttentionType.GQA,
                 gqa_config=gqa_config
@@ -234,7 +244,7 @@ def run_tests_on_gpu():
             with torch.no_grad():
                 # Convert model to float32 to avoid dtype mismatch
                 model = model.float()
-                hidden_states, logits = model(tokens, start_pos=0)
+                hidden_states, logits, _ = model(tokens, start_pos=0)
             
             print(f"   Input: {tokens.shape}")
             print(f"   Hidden states: {hidden_states.shape}")
@@ -304,7 +314,7 @@ def run_tests_on_gpu():
             with torch.no_grad():
                 # Convert model to float32 to avoid dtype mismatch
                 model = model.float()
-                hidden_states, logits = model(tokens, start_pos=0)
+                hidden_states, logits, _ = model(tokens, start_pos=0)
             
             print(f"   Input: {tokens.shape}")
             print(f"   Hidden states: {hidden_states.shape}")
@@ -378,7 +388,7 @@ def run_tests_on_gpu():
             with torch.no_grad():
                 # Convert model to float32 to avoid dtype mismatch
                 model = model.float()
-                hidden_states, logits = model(tokens, start_pos=0)
+                hidden_states, logits, _ = model(tokens, start_pos=0)
             
             print(f"   Input: {tokens.shape}")
             print(f"   Hidden states: {hidden_states.shape}")
@@ -415,14 +425,44 @@ def run_tests_on_gpu():
             from sabiyarn.model import _create_attention
             
             # Test MHA creation
+            mha_config = SelfAttnArgs(
+                dim= 256,
+                n_heads=8,
+                max_batch_size=2,
+                max_seq_len=32,
+                use_kv_cache= True,
+                bias = False,
+                dropout = 0.1,
+            )
+            
             mha_config = ModelArgs(
                 dim=256,
                 n_heads=8,
-                attention_type=AttentionType.SELF_ATTENTION
+                attention_type=AttentionType.SELF_ATTENTION,
+                mha_config = mha_config
             )
             mha_attention = _create_attention(0, mha_config)
             print("✅ MHA attention module created")
 
+            # Test GQA creation
+            gqa_config = GQAArgs(
+                dim= 256,
+                n_heads=8,
+                max_batch_size=2,
+                max_seq_len=32,
+                use_kv_cache= True,
+                dropout = 0.1,
+            )
+            
+            gqa_config = ModelArgs(
+                dim=256,
+                n_heads=8,
+                attention_type=AttentionType.GQA,
+                gqa_config = gqa_config
+            )
+            gqa_attention = _create_attention(0, gqa_config)
+            print("✅ MHA attention module created")
+   
             # Test Differential Attention creation
             diff_args = DiffAttnArgs(
                 depth=0,
@@ -436,7 +476,7 @@ def run_tests_on_gpu():
             diff_config = ModelArgs(
                 dim=256,
                 attention_type=AttentionType.DIFFERENTIAL_ATTENTION,
-                diff_attn_args=diff_args
+                diff_attn_config=diff_args
             )
             diff_attention = _create_attention(0, diff_config)
             print("✅ Differential attention module created")
@@ -487,10 +527,21 @@ def run_tests_on_gpu():
             from sabiyarn.model import _validate_attention_config
             
             # Test valid configurations
+            mha_config = SelfAttnArgs(
+                dim= 256,
+                n_heads=8,
+                max_batch_size=2,
+                max_seq_len=32,
+                use_kv_cache= True,
+                bias = False,
+                dropout = 0.1,
+            )
+            
             valid_mha = ModelArgs(
                 dim=256,
                 n_heads=8,
-                attention_type=AttentionType.SELF_ATTENTION
+                attention_type=AttentionType.SELF_ATTENTION,
+                mha_config = mha_config
             )
             _validate_attention_config(valid_mha)
             print("✅ Valid MHA config validation passed")

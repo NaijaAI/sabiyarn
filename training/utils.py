@@ -2,6 +2,7 @@ import torch
 from transformers import AutoTokenizer
 import numpy as np
 from training.constant_tokens import *
+# from constant_tokens import *
 
 
 def mask_long_sequences(tensor, target_value=220, mask_value=-100, min_length=2):
@@ -430,13 +431,13 @@ def benchmark_label_processing():
     test_tokens = []
     for _ in range(100):
         # Create a sequence with some tag tokens
-        tokens = torch.randint(0, 1000, (200,), device=device)
+        tokens = torch.randint(0, 1000, (100,), device=device)
         # Insert some tag tokens
-        tokens[10] = topic_token
-        tokens[20] = classify_token
-        tokens[50] = sentiment_token
-        tokens[100] = qa_token
-        tokens[150] = answer_token
+        tokens[5] = topic_token
+        tokens[10] = classify_token
+        tokens[14] = sentiment_token
+        tokens[19] = qa_token
+        tokens[25] = answer_token
         test_tokens.append(tokens)
     
     print("Benchmarking label processing functions...")
@@ -474,7 +475,9 @@ def benchmark_label_processing():
     print(f"Baseline version: {baseline_time:.4f}s")
     print(f"Speedup (ultra-optimized vs optimized): {optimized_time/ultra_optimized_time:.2f}x")
     print(f"Speedup (ultra-optimized vs baseline): {baseline_time/ultra_optimized_time:.2f}x")
+    print(first_result.dtype, second_result.dtype, base_result.dtype)
     assert torch.equal(first_result, second_result)
+    assert torch.equal(first_result, base_result)
     assert torch.equal(second_result, base_result)
     assert True
 
