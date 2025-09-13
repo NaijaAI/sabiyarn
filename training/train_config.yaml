@@ -1,0 +1,139 @@
+
+training: 
+  train_batch_size : 10
+  out_dir : "out"
+  eval_interval : 2000
+  log_interval : 100
+  eval_iters : 200
+  eval_only : false  # if True, script exits right after the first eval
+  always_save_checkpoint : true  # if True, always save a checkpoint after each eval
+  gradient_accumulation_steps : 5
+  learning_rate: 3.0e-4
+  decay_lr : True  # whether to decay the learning rate
+  warmup_iters : 1500  # how many steps to warm up for
+  lr_decay_iters : 1000  # should be ~: max_iters per Chinchilla
+  min_lr : 6e-5  # minimum learning rate, should be ~: learning_rate/10 per Chinchilla
+  compile : true  # use PyTorch 2.0 to compile the model to be faster
+  display_model_output_iter : 768
+  use_cce : True  # to use cut cross entropy or not
+  scheduler: "cosine"
+  init_from:  "scratch"
+  max_batch_size : 16
+  use_cut_cross_entropy: true
+  enable_generation_during_training: true
+  dtype: "bfloat16"
+  compile_model: true
+  optimizer_type : "adamw"
+  max_iters : 600000  # total number of training iterations
+  weight_decay : 1.0e-1
+  beta1 : 0.9
+  beta2 : 0.95
+  grad_clip : 1.0
+  log_grad_norm: true
+  log_weights: True  # Log weight distributions
+  log_system_metrics:  True
+  log_moe_metrics: True  # Log MoE expert utilization
+  log_attention_metrics: True  # Log attention statistics
+  monitor_interval: 50
+  device: "cuda"
+
+# wandb logging
+wandb: 
+  log : true  # disabled by default
+  project : sabiyarn-ablations
+  wandb_run_name : gqa_cce  # 'run' + str(time.time())
+  save_model_to_wandb: true
+  eval_interval: 2000
+  log_interval: 100
+  run_dir: None
+  seed: 42
+  out_dir: "out"
+
+# data
+data: 
+  dataset: "Aletheia-ng/pretrain_test"
+  train_data_path : "data/train.bin"
+  eval_data_path : "data/val.bin"
+  out_dir: "/data/checkpoints"
+
+# model
+model:
+  vocab_size : 64000
+  n_layers : 8
+  n_heads : 8
+  dropout : 0.0  # for pretraining 0 is good, for finetuning try 0.1+
+  bias : False  # do we use bias inside LayerNorm and Linear layers?
+  dim : 768
+  n_kv_heads : 4
+  multiple_of : 256  # make SwiGLU hidden layer size multiple of large power of 2
+  ffn_dim_multiplier : None
+  norm_eps : 1.0e-5
+  #moe
+  use_moe : false
+  n_routed_experts: int = 16
+  n_activated_experts: int = 8
+  moe_inter_dim: 2048
+  n_shared_experts: 1
+  score_function: "sigmoid"
+  bias_update_speed: 0.001
+  moe_aux_loss_weight: 0.001
+
+  use_logic_network: bool = False
+  use_j_linear: True
+  tie_weights: False
+  norm_eps: 1.0e-5
+  init_std: 0.02
+
+  # Layer Sharing
+  layer_sharing: True
+  layer_sharing_strategy: "immediate"
+  n_unique_layers: 8
+
+  # Cut Cross Entropu
+  use_cut_cross_entropy: true
+  # Multi-Token Prediction
+  use_multi_token_prediction: False
+  num_prediction_tokens: 2
+  mtp_only_training: True
+
+  attention_type : "GQA"
+  logic_network : False
+  max_seq_len : 1024
+  use_j : True
+  num_experts : 4
+  num_experts_per_tok : 2
+  init_from : "scratch"  # 'scratch' or 'checkpoint'
+  layer_norm_epsilon: 1.0e-6
+  max_position_embeddings: 131072
+  initializer_range: 0.02
+  rms_norm_eps: 1.0e-6
+  tie_word_embeddings: false
+  attention_dropout: 0.0
+  tokenizer:
+    name: "Aletheia-ng/SabiYarn_test"
+    num_proc: 64
+    process_one_file_at_a_time: True
+
+# adamw optimizer
+optimizer:
+  name : "adam"
+  learning_rate : 3e-4  # max learning rate
+  max_iters : 600000  # total number of training iterations
+  weight_decay : 1e-1
+  beta1 : 0.9
+  beta2 : 0.95
+  grad_clip : 1.0  # clip gradients at this value, or disable if :: 0.0
+
+
+# DDP settings
+ddp:
+  rank : 0
+  backend : "nccl"
+  use_dp: False
+
+#Accelerate config
+accelerate: 
+  mixed_precision: "fp16"
+  zero_stage: 3
+  gradient_clipping: 1.0
+

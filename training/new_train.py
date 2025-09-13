@@ -96,8 +96,9 @@ class TrainingConfig:
     train_batch_size: int = 14 #8
     bias: bool = False
     dropout: float= 0.1
+    use_kv_cache: bool = False
     # Attention-specific configs
-    use_mla: bool = True
+    use_mla: bool = False
     use_differential_attention: bool = False
     
     # MLA Configuration
@@ -134,7 +135,7 @@ class TrainingConfig:
     # Other model features
     use_logic_network: bool = False
     use_j_linear: bool = True
-    tie_weights: bool = True
+    tie_weights: bool = False
     norm_eps: float = 1e-5
     init_std: float = 0.02
     
@@ -707,7 +708,7 @@ class SabiYarnTrainer:
                     max_seq_len = self.config.max_seq_len, max_batch_size = self.config.max_batch_size, use_kv_cache = self.config.use_kv_cache, 
                     dropout = self.config.dropout)
         else:
-            mha_config = SelfAttnArgs(dim= self.config.dim, n_kv_heads= self.config.n_kv_heads, n_heads = self.config.n_heads,  
+            mha_config = SelfAttnArgs(dim= self.config.dim,  n_heads = self.config.n_heads,  
                     max_seq_len = self.config.max_seq_len, max_batch_size = self.config.max_batch_size, use_kv_cache = self.config.use_kv_cache, bias= self.config.bias, dropout=self.config.dropout)
             
  
@@ -1268,7 +1269,7 @@ class SabiYarnTrainer:
          
                     self.best_val_loss = losses["val"]
                     if self.iter_num > 0:
-                        self.save_checkpoint()
+                        # self.save_checkpoint()
                         self.save_checkpoint_wandb()
                         
             if self.iter_num == 0 and self.config.eval_only:
@@ -1324,7 +1325,7 @@ class SabiYarnTrainer:
                 LOG.info(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, learning rate {lr}")
                 
                 # Log advanced metrics
-                self.log_advanced_metrics(loss * self.config.gradient_accumulation_steps, self.model, self.optimizer)
+                self.log_advanced_metrics(loss* self.config.gradient_accumulation_steps, self.model, self.optimizer)
                 
             self.iter_num += 1
             self.local_iter_num += 1

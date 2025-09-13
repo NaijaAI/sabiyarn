@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch import nn
 from typing import Optional
 from dataclasses import dataclass
-from utils import apply_rotary_emb
+from .utils import apply_rotary_emb
 
 @dataclass
 class SelfAttnArgs:

@@ -42,65 +42,7 @@ volume = modal.Volume.from_name("sabiyarn-data", create_if_missing=True)
     cpu=8,
     # memory=32768,  # 32GB RAM
 )
-def train_sabiyarn(
-    # Model configuration
-    attention_type: str = "self-attention",
-    dim: int = 1024,
-    n_layers: int = 16,
-    n_heads: int = 16,
-    n_kv_heads: int = 8,
-    vocab_size: int = 64000,
-    max_seq_len: int = 1024,
-    max_batch_size: int = 16,
-    
-    # MoE configuration
-    use_moe: bool = True,
-    n_routed_experts: int = 16,
-    n_activated_experts: int = 8,
-    moe_inter_dim: int = 2048,
-    n_shared_experts: int = 1,
-    score_function: str = "sigmoid",
-    bias_update_speed: float = 0.001,
-    moe_aux_loss_weight: float = 0.001,
-    
-    # Multi-Token Prediction
-    use_multi_token_prediction: bool = False,
-    num_prediction_tokens: int = 2,
-    mtp_only_training: bool = True,
-    
-    # Layer Sharing
-    layer_sharing: bool = True,
-    layer_sharing_strategy: str = "immediate",
-    n_unique_layers: int = 8,
-    
-    # Training configuration
-    train_batch_size: int = 10,
-    gradient_accumulation_steps: int = 5,
-    learning_rate: float = 3e-4,
-    max_iters: int = 60000,
-    weight_decay: float = 1e-1,
-    grad_clip: float = 1.0,
-    warmup_iters: int = 150,
-    lr_decay_iters: int = 1000,
-    
-    # Data and checkpointing
-    dataset: str = "Aletheia-ng/pretrain_test",
-    out_dir: str = "/data/checkpoints",
-    eval_interval: int = 2000,
-    log_interval: int = 100,
-    run_dir: str | None = None,
-
-    init_from: str = "scratch",
-    use_cut_cross_entropy=True,
-    
-    # W&B configuration
-    wandb_project: str = "sabiyarn-tests",
-    wandb_run_name: str = "MHA+CCE",
-    
-    # System
-    dtype: str = "bfloat16",
-    compile_model: bool = True,
-):
+def train_sabiyarn():
     """
     Train SabiYarn model on Modal GPU with comprehensive monitoring.
     
@@ -109,6 +51,7 @@ def train_sabiyarn(
     """
     import os
     import sys
+    import yaml
     
     # Setup paths for Modal environment
     os.chdir("/app")
@@ -117,83 +60,89 @@ def train_sabiyarn(
     # Import training modules
     from training.new_train import TrainingConfig, SabiYarnTrainer, AttentionType
     
+    CONFIG_PATH = "/app/training/train_config.yaml"
+
+    with open(CONFIG_PATH, "r") as f:
+        conf = yaml.safe_load(f)
     # Create configuration
     config = TrainingConfig(
         # Model Architecture
-        attention_type=AttentionType.SELF_ATTENTION,
-        dim=dim,
-        n_layers=n_layers,
-        n_heads=n_heads,
-        n_kv_heads=n_kv_heads,
-        vocab_size=vocab_size,
-        max_seq_len=max_seq_len,
-        max_batch_size=max_batch_size,
+        attention_type=AttentionType(conf["model"]["attention_type"]),
+        dim=conf['model']['dim'],
+        n_layers=conf['model']['n_layers'],
+        n_heads=conf['model']['n_heads'],
+        n_kv_heads=conf['model']['n_kv_heads'],
+        vocab_size=conf['model']['vocab_size'],
+        max_seq_len=conf['model']['max_seq_len'],
+        max_batch_size=conf['training']['max_batch_size'],
+        tie_weights=conf['model']['tie_weights'],
         
         # MoE Configuration
-        use_moe=use_moe,
-        n_routed_experts=n_routed_experts,
-        n_activated_experts=n_activated_experts,
-        moe_inter_dim=moe_inter_dim,
-        n_shared_experts=n_shared_experts,
-        score_function=score_function,
-        bias_update_speed=bias_update_speed,
-        moe_aux_loss_weight=moe_aux_loss_weight,
+        use_moe=conf['model']['use_moe'],
+        n_routed_experts=conf['model']['n_routed_experts'],
+        n_activated_experts=conf['model']['n_activated_experts'],
+        moe_inter_dim=conf['model']['moe_inter_dim'],
+        n_shared_experts=conf['model']['n_shared_experts'],
+        score_function=conf['model']['score_function'],
+        bias_update_speed=conf['model']['bias_update_speed'],
+        moe_aux_loss_weight=conf['model']['moe_aux_loss_weight'],
         
         # Multi-Token Prediction
-        use_multi_token_prediction=use_multi_token_prediction,
-        num_prediction_tokens=num_prediction_tokens,
-        mtp_only_training=mtp_only_training,
+        use_multi_token_prediction=conf['model']['use_multi_token_prediction'],
+        num_prediction_tokens=conf['model']['num_prediction_tokens'],
+        mtp_only_training=conf['model']['mtp_only_training'],
         
         # Layer Sharing
-        layer_sharing=layer_sharing,
-        layer_sharing_strategy=layer_sharing_strategy,
-        n_unique_layers=n_unique_layers,
+        layer_sharing=conf['model']['layer_sharing'],
+        layer_sharing_strategy=conf['model']['layer_sharing_strategy'],
+        n_unique_layers=conf['model']['n_unique_layers'],
         
         #CCE
-        use_cut_cross_entropy=use_cut_cross_entropy,
+        use_cut_cross_entropy=conf['model']['use_cut_cross_entropy'],
         
         # Training Configuration
-        train_batch_size=train_batch_size,
-        gradient_accumulation_steps=gradient_accumulation_steps,
-        learning_rate=learning_rate,
-        max_iters=max_iters,
-        weight_decay=weight_decay,
-        warmup_iters=warmup_iters,
-        lr_decay_iters=lr_decay_iters,
-        grad_clip=grad_clip,
+        train_batch_size=conf['training']['train_batch_size'],
+        gradient_accumulation_steps=conf['training']['gradient_accumulation_steps'],
+        learning_rate= conf['training']['learning_rate'],
+        max_iters=conf['training']['max_iters'],
+        weight_decay=conf['training']['weight_decay'],
+        warmup_iters=conf['training']['warmup_iters'],
+        lr_decay_iters=conf['training']['lr_decay_iters'],
+        grad_clip=conf['training']['grad_clip'],
+        optimizer_type=conf['training']['optimizer_type'],
         
         # Data paths (Modal persistent volume)
-        dataset=dataset,
+        dataset=conf['data']['dataset'],
         train_data_path="/data/train.bin",
         eval_data_path="/data/val.bin",
-        out_dir=out_dir,
-        eval_interval=eval_interval,
-        log_interval=log_interval,
-        run_dir=run_dir,
+        out_dir=conf['wandb']['out_dir'],
+        eval_interval=conf['wandb']['eval_interval'],
+        log_interval=conf['wandb']['log_interval'],
+        run_dir=conf['wandb']['run_dir'],
         
         # W&B Configuration
-        wandb_log=True,
-        wandb_project=wandb_project,
-        wandb_run_name=wandb_run_name,
-        wandb_tags=["Modal", "GPU", attention_type, "SabiYarn"],
+        wandb_log=conf["wandb"]["log"],
+        wandb_project=conf['wandb']['project'],
+        wandb_run_name=conf['wandb']['wandb_run_name'],
+        wandb_tags=["Modal", "GPU", conf['model']['attention_type'], "SabiYarn"],
         
         # Enhanced monitoring for Modal
-        log_grad_norm=True,
+        log_grad_norm=conf['training']['log_grad_norm'],
         log_weights=True,
         log_system_metrics=True,
-        log_moe_metrics=use_moe,
+        log_moe_metrics=True,
         monitor_interval=50,
         
-        init_from=init_from,
+        init_from=conf['training']['init_from'],
         
 
         # System
-        device="cuda",
-        dtype=dtype,
-        compile_model=compile_model,  # Disable for debugging
+        device=conf['training']['device'],
+        dtype=conf['training']['dtype'],
+        compile_model=conf['training']['compile_model'],  # Disable for debugging
 
         # Generation during training
-        enable_generation_during_training=False,
+        enable_generation_during_training=conf['training']['enable_generation_during_training'],
     )
     
     print("Starting SabiYarn training on Modal GPU...")
@@ -210,71 +159,6 @@ def train_sabiyarn(
         raise
 
 
-@app.function(
-    image=image,
-    volumes={"/data": volume},
-    timeout=86400,  # 24 hours
-    secrets=[modal.Secret.from_name("hf-secret")],
-    cpu=8
-)
-
-def prepare_data():
-    """Prepare training data on Modal."""
-    import os
-    import sys
-    
-    os.chdir("/app")
-    sys.path.insert(0, "/app")
-    
-    from data import prepare
-    
-    print("📁 Preparing training data...")
-    
-    # Persist Hugging Face caches on the mounted Modal volume for stability
-    cache_root = "/data/hf_cache"
-    os.environ.setdefault("HF_HOME", cache_root)
-    os.environ.setdefault("HF_DATASETS_CACHE", os.path.join(cache_root, "datasets"))
-    os.environ.setdefault("TRANSFORMERS_CACHE", os.path.join(cache_root, "transformers"))
-    os.makedirs(os.environ["HF_HOME"], exist_ok=True)
-    os.makedirs(os.environ["HF_DATASETS_CACHE"], exist_ok=True)
-    os.makedirs(os.environ["TRANSFORMERS_CACHE"], exist_ok=True)
-
-    # Set data paths to persistent volume and persist state under /data
-    os.environ["TRAIN_DATA_PATH"] = "/data/train.bin"
-    os.environ["VAL_DATA_PATH"] = "/data/val.bin"
-    os.environ.setdefault("PREP_STATE_PATH", "/data/data_struct.json")
-
-    # Skip if bins already exist and are non-empty, unless FORCE_PREP=1
-    def _is_nonempty(path: str) -> bool:
-        try:
-            return os.path.exists(path) and os.path.getsize(path) > 0
-        except Exception:
-            return False
-
-    if _is_nonempty(os.environ["TRAIN_DATA_PATH"]) and _is_nonempty(os.environ["VAL_DATA_PATH"]) and os.getenv("FORCE_PREP", "0") != "1":
-        print("📁 Existing tokenized bins found. Skipping re-tokenization.")
-    else:
-        prepare.run(["Aletheia-ng/pretrain_test"], 1)
-    
-    # Validate the created data files
-    import numpy as np
-    try:
-        train_data = np.memmap("/data/train.bin", dtype=np.uint16, mode="r")
-        val_data = np.memmap("/data/val.bin", dtype=np.uint16, mode="r")
-        
-        train_max = train_data.max() if len(train_data) > 0 else 0
-        val_max = val_data.max() if len(val_data) > 0 else 0
-        
-        print(f"📊 Data validation:")
-        print(f"   Train data: {len(train_data)} tokens, max_id: {train_max}")
-        print(f"   Val data: {len(val_data)} tokens, max_id: {val_max}")
-        
-            
-    except Exception as e:
-        print(f"❌ Data validation failed: {e}")
-    
-    print("✅ Data preparation completed!")
-
 @app.local_entrypoint()
 def main():
 
@@ -282,28 +166,7 @@ def main():
     # print("📁 Preparing data...")
     # prepare_data.remote()
 
-    result = train_sabiyarn.remote(
-        dim=1024,
-        n_layers=24,
-        n_heads=8,
-        n_kv_heads=4,
-        use_moe=False,
-        n_routed_experts=5,
-        n_activated_experts=2,
-        learning_rate=1e-4,
-        use_multi_token_prediction=False,
-        compile_model=False,
-        use_cut_cross_entropy=True,
-        layer_sharing=True,
-        layer_sharing_strategy="immediate",
-        n_unique_layers=12,
-        max_iters=3000,  # Shorter for testing
-        warmup_iters=300,
-        lr_decay_iters=1000,
-        wandb_run_name="moe_cce",
-        init_from="scratch",
-        run_dir="/data/checkpoints/moe_cce_1",
-    )
+    result = train_sabiyarn.remote()
     
     if result:
         print("🎉 Training completed successfully!")

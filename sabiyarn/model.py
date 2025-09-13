@@ -173,7 +173,7 @@ def _create_attention(layer_id: int, args: 'ModelArgs') -> nn.Module:
     
     else:  # Default to SELF_ATTENTION
         if args.mha_config is None:
-            raise ValueError("mha_config must be provided for Grouped Query Attention")
+            raise ValueError("mha_config must be provided for MultiHead Attention")
         return CausalSelfAttention(args)
 
 
@@ -662,7 +662,7 @@ class SabiYarn(nn.Module):
             # MLA uses its own frequency computation
             freqs_cis = self.freqs_cis
             
-        elif self.freq_cis is not None:
+        elif self.freqs_cis is not None:
             # For non-MLA attention, slice pre-computed frequencies
             # if self.freqs_cis is not None:
             self.freqs_cis = self.freqs_cis.to(h.device)
