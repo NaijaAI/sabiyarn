@@ -8,12 +8,14 @@ import torch.distributed as dist
 from dataclasses import dataclass
 from typing import Tuple, Optional, Literal
 from .kernel import act_quant, weight_dequant, fp8_gemm
+from omegaconf import OmegaConf
 import math
 
-world_size = 1 # the number of GPUs
-rank = 0 # the rank of the current GPU
-block_size = 128 # the block size of the input tensor. useful when using fp8
-gemm_impl: Literal["bf16", "fp8"] = "bf16"
+config = OmegaConf.load("../config/config.yaml")
+world_size = config.env.world_size # the number of GPUs
+rank = config.env.rank # the rank of the current GPU
+block_size = config.training.block_size # the block size of the input tensor. useful when using fp8
+gemm_impl: Literal["bf16", "fp8"] = config.training.gemm_impl
 
 @dataclass
 class MLAConfig:
@@ -34,6 +36,9 @@ class MLAConfig:
     rope_factor: float = 40 #Scaling factor for extended sequence lengths.
     beta_fast: int = 32
     beta_slow: int = 1
+    world_size: int = 1
+    attn_impl: str = 'optimized'
+
 
 def linear(x: torch.Tensor, weight: torch.Tensor, bias: Optional[torch.Tensor] = None) -> torch.Tensor:
     """
@@ -196,6 +201,60 @@ class RMSNorm(nn.Module):
         hidden_states = hidden_states * torch.rsqrt(variance + self.eps)
         return self.weight * hidden_states
 
+
+def find_correction_dim(num_rotations, dim, base, max_seq_len):
+    """
+    Computes the correction dimension for a given number of rotations in the rotary positional embedding.
+
+    Args:
+        num_rotations (float): Number of rotations to compute the correction for.
+        dim (int): Dimensionality of the embedding space.
+        base (float): Base value for the exponential computation.
+        max_seq_len (int): Maximum sequence length.
+
+    Returns:
+        float: The correction dimension based on the input parameters.
+    """
+    return dim * math.log(max_seq_len / (num_rotations * 2 * math.pi)) / (2 * math.log(base))
+
+def find_correction_range(low_rot, high_rot, dim, base, max_seq_len):
+    """
+    Computes the range of correction dimensions for rotary positional embeddings.
+
+    Args:
+        low_rot (float): Lower bound for the number of rotations.
+        high_rot (float): Upper bound for the number of rotations.
+        dim (int): Dimensionality of the embedding space.
+        base (float): Base value for the exponential computation.
+        max_seq_len (int): Maximum sequence length.
+
+    Returns:
+        Tuple[int, int]: The range of correction dimensions (low, high), clamped to valid indices.
+    """
+    low = math.floor(find_correction_dim(low_rot, dim, base, max_seq_len))
+    high = math.ceil(find_correction_dim(high_rot, dim, base, max_seq_len))
+    return max(low, 0), min(high, dim-1)
+
+def linear_ramp_factor(min, max, dim):
+    """
+    Computes a linear ramp function used to smooth values between a minimum and maximum range.
+
+    Args:
+        min (float): Minimum value for the ramp function.
+        max (float): Maximum value for the ramp function.
+        dim (int): Dimensionality of the ramp tensor.
+
+    Returns:
+        torch.Tensor: A tensor of shape (dim,) with values linearly interpolated between 0 and 1,
+            clamped to the range [0, 1].
+    """
+    if min == max:
+        max += 0.001
+    linear_func = (torch.arange(dim, dtype=torch.float32) - min) / (max - min)
+    ramp_func = torch.clamp(linear_func, 0, 1)
+    return ramp_func
+
+    
 def precompute_freqs_cis(args: MLAConfig) -> torch.Tensor:
     """
     Precomputes frequency-based complex exponential values for rotary positional embeddings.
@@ -213,57 +272,6 @@ def precompute_freqs_cis(args: MLAConfig) -> torch.Tensor:
     base = args.rope_theta
     factor = args.rope_factor
 
-    def find_correction_dim(num_rotations, dim, base, max_seq_len):
-        """
-        Computes the correction dimension for a given number of rotations in the rotary positional embedding.
-
-        Args:
-            num_rotations (float): Number of rotations to compute the correction for.
-            dim (int): Dimensionality of the embedding space.
-            base (float): Base value for the exponential computation.
-            max_seq_len (int): Maximum sequence length.
-
-        Returns:
-            float: The correction dimension based on the input parameters.
-        """
-        return dim * math.log(max_seq_len / (num_rotations * 2 * math.pi)) / (2 * math.log(base))
-
-    def find_correction_range(low_rot, high_rot, dim, base, max_seq_len):
-        """
-        Computes the range of correction dimensions for rotary positional embeddings.
-
-        Args:
-            low_rot (float): Lower bound for the number of rotations.
-            high_rot (float): Upper bound for the number of rotations.
-            dim (int): Dimensionality of the embedding space.
-            base (float): Base value for the exponential computation.
-            max_seq_len (int): Maximum sequence length.
-
-        Returns:
-            Tuple[int, int]: The range of correction dimensions (low, high), clamped to valid indices.
-        """
-        low = math.floor(find_correction_dim(low_rot, dim, base, max_seq_len))
-        high = math.ceil(find_correction_dim(high_rot, dim, base, max_seq_len))
-        return max(low, 0), min(high, dim-1)
-
-    def linear_ramp_factor(min, max, dim):
-        """
-        Computes a linear ramp function used to smooth values between a minimum and maximum range.
-
-        Args:
-            min (float): Minimum value for the ramp function.
-            max (float): Maximum value for the ramp function.
-            dim (int): Dimensionality of the ramp tensor.
-
-        Returns:
-            torch.Tensor: A tensor of shape (dim,) with values linearly interpolated between 0 and 1,
-                clamped to the range [0, 1].
-        """
-        if min == max:
-            max += 0.001
-        linear_func = (torch.arange(dim, dtype=torch.float32) - min) / (max - min)
-        ramp_func = torch.clamp(linear_func, 0, 1)
-        return ramp_func
 
     freqs = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
     if seqlen > args.original_seq_len:
@@ -310,7 +318,7 @@ class MLA(nn.Module):
 
     Attributes:
         dim (int): Dimensionality of the input features.
-        num_heads (int): Number of attention heads.
+        n_heads (int): Number of attention heads.
         n_local_heads (int): Number of local attention heads for distributed systems.
         q_lora_rank (int): Rank for low-rank query projection.
         kv_lora_rank (int): Rank for low-rank key/value projection.
@@ -320,63 +328,42 @@ class MLA(nn.Module):
         v_head_dim (int): Dimensionality of value projections.
         softmax_scale (float): Scaling factor for softmax in attention computation.
     """
-    def __init__(self, config):
+    def __init__(self, args: MLAConfig):
         super().__init__()
-        # 1. MHA
-        self.attention_dropout = config.attention_dropout
-        self.hidden_size = config.hidden_size
-        self.num_heads = config.num_heads
-        self.n_local_heads = config.num_heads // world_size
-        self.v_head_dim = config.v_head_dim
-
-        self.out_proj = RowParallelLinear(self.num_heads * self.v_head_dim, self.hidden_size)
-
-        # 2. MLA compression
-        # 2.1 down compression
-        self.qk_nope_head_dim = config.qk_nope_head_dim
-        self.qk_rope_head_dim = config.qk_rope_head_dim
-        self.q_lora_rank = config.q_lora_rank
-        self.kv_lora_rank = config.kv_lora_rank
-
-        # 2 parts
-        # 2.1 down compression
-        self.q_down_proj = nn.Linear(
-            self.hidden_size,
-            self.q_lora_rank,
-            bias=config.attention_bias,
-        )
-        self.q_down_norm = RMSNorm(self.q_lora_rank)
-
-        self.kv_down_proj = nn.Linear(
-            self.hidden_size,
-            self.kv_lora_rank + config.qk_rope_head_dim,
-            bias=config.attention_bias,
-        )  # qk_rope_head_dim usually 64
-        self.kv_down_norm = RMSNorm(self.kv_lora_rank)
-        # after down, two parts, need to split
-
-        # 2.2 up compression
-        # q, k shape is same
-        self.qk_head_dim = config.qk_nope_head_dim + config.qk_rope_head_dim
-        self.q_up_proj = ColumnParallelLinear(self.q_lora_rank, self.num_heads * self.qk_head_dim)  # also split
-
-        self.kv_up_proj = ColumnParallelLinear(
-            self.kv_lora_rank,
-            self.num_heads
-            * (
-                self.qk_nope_head_dim + self.v_head_dim
-            ),  
-        )
-
-        self.softmax_scale = self.qk_head_dim**0.5
-        if config.max_seq_len > config.original_seq_len:
-            mscale = 0.1 * config.mscale * math.log(config.rope_factor) + 1.0
-            self.softmax_scale = self.softmax_scale * mscale * mscale
+        self.dim = args.hidden_size
+        self.n_heads = args.num_heads
+        self.n_local_heads = args.num_heads // args.world_size
+        self.q_lora_rank = args.q_lora_rank
+        self.kv_lora_rank = args.kv_lora_rank
+        self.qk_nope_head_dim = args.qk_nope_head_dim
+        self.qk_rope_head_dim = args.qk_rope_head_dim
+        self.qk_head_dim = args.qk_nope_head_dim + args.qk_rope_head_dim
+        self.v_head_dim = args.v_head_dim
+        self.args = args
         
-        self.register_buffer("kv_cache", torch.zeros(config.max_batch_size, config.max_seq_len, self.kv_lora_rank, dtype=torch.bfloat16), persistent=False)
-        self.register_buffer("pe_cache", torch.zeros(config.max_batch_size, config.max_seq_len, self.qk_rope_head_dim, dtype=torch.bfloat16), persistent=False)     
+        if self.q_lora_rank == 0:
+            self.wq = ColumnParallelLinear(self.dim, self.n_heads * self.qk_head_dim)
+        else:
+            self.wq_a = Linear(self.dim, self.q_lora_rank)
+            self.q_norm = RMSNorm(self.q_lora_rank)
+            self.wq_b = ColumnParallelLinear(self.q_lora_rank, self.n_heads * self.qk_head_dim)
+        self.wkv_a = Linear(self.dim, self.kv_lora_rank + self.qk_rope_head_dim)
+        self.kv_norm = RMSNorm(self.kv_lora_rank)
+        self.wkv_b = ColumnParallelLinear(self.kv_lora_rank, self.n_heads * (self.qk_nope_head_dim + self.v_head_dim))
+        self.wo = RowParallelLinear(self.n_heads * self.v_head_dim, self.dim)
+        self.softmax_scale = self.qk_head_dim ** -0.5
+        if args.max_seq_len > args.original_seq_len:
+            mscale = 0.1 * args.mscale * math.log(args.rope_factor) + 1.0
+            self.softmax_scale = self.softmax_scale * mscale * mscale
 
-    def forward(self, x: torch.Tensor, start_pos: int, freqs_cis: torch.Tensor, mask: Optional[torch.Tensor] = None):
+        if args.attn_impl == "naive":
+            self.register_buffer("k_cache", torch.zeros(args.max_batch_size, args.max_seq_len, self.n_local_heads, self.qk_head_dim), persistent=False)
+            self.register_buffer("v_cache", torch.zeros(args.max_batch_size, args.max_seq_len, self.n_local_heads, self.v_head_dim), persistent=False)
+        else:
+            self.register_buffer("kv_cache", torch.zeros(args.max_batch_size, args.max_seq_len, self.kv_lora_rank), persistent=False)
+            self.register_buffer("pe_cache", torch.zeros(args.max_batch_size, args.max_seq_len, self.qk_rope_head_dim), persistent=False)
+
+    def forward(self, x: torch.Tensor, start_pos: int, freqs_cis: torch.Tensor, mask: Optional[torch.Tensor]):
         """
         Forward pass for the Multi-Head Latent Attention (MLA) Layer.
 
@@ -387,78 +374,48 @@ class MLA(nn.Module):
             mask (Optional[torch.Tensor]): Mask tensor to exclude certain positions from attention.
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]: Output tensor and attention weights.
+            torch.Tensor: Output tensor with the same shape as the input.
         """
-        # x (b, seq_len, hidden_dim)
-        bsz, q_len, _ = x.size()
-        end_pos = start_pos + q_len
-
-        # 1. q compression
-        q = self.q_down_proj(x)
-        q = self.q_down_norm(q)
-        q = self.q_up_proj(q)# q shape: self.num_heads * self.qk_head_dim,(b, seq_len, self.num_heads * self.qk_head_dim,)
-        q = q.view(bsz, q_len, self.n_local_heads, self.qk_head_dim)#.transpose(1, 2)
-        # (b, num_head, seq_len, qk_head_dim)
-
-        q_nope, q_rope = torch.split(
-            q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1
-        )
-        q_rope = apply_rotary_emb(q_rope, freqs_cis)
-        
-        # kv part
-        # c_kv: compressed kv
-        c_kv = self.kv_down_proj(x)
-        c_kv, k_rope = torch.split(
-            c_kv, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1
-        )  # k_rope shape: (b, seq_len, self.qk_rope_head_dim)
-        k_rope = apply_rotary_emb(k_rope.unsqueeze(2), freqs_cis)
-
-        kv_up_proj = self.kv_up_proj.weight if self.kv_up_proj.scale is None else weight_dequant(self.kv_up_proj.weight, self.kv_up_proj.scale, block_size)
-        kv_up_proj = kv_up_proj.view(self.n_local_heads, -1, self.kv_lora_rank)
-        q_nope = torch.einsum("bshd,hdc->bshc", q_nope, kv_up_proj[:, :self.qk_nope_head_dim])
-        # Only use caching during inference, not training
-        if not self.training:
-            self.kv_cache[:bsz, start_pos:end_pos] = self.kv_down_norm(c_kv)
-            self.pe_cache[:bsz, start_pos:end_pos] = k_rope.squeeze(2)
-        
-        # Transpose query tensors to have correct dimension order for einsum
-        q_nope = q_nope.transpose(1, 2)  # (batch_size, num_heads, seq_len, head_dim)
-        q_rope = q_rope.transpose(1, 2)  # (batch_size, num_heads, seq_len, head_dim)
-        
-        # Compute current KV values for this forward pass
-        kv_current = self.kv_down_norm(c_kv)
-        k_rope_current = k_rope.squeeze(2)
-        
-        if self.training:
-            # During training: use current values directly
-            kv_to_use = kv_current
-            pe_to_use = k_rope_current
+        bsz, seqlen, _ = x.size()
+        end_pos = start_pos + seqlen
+        if self.q_lora_rank == 0:
+            q = self.wq(x)
         else:
-            # During inference: use cached values that include history
-            kv_to_use = self.kv_cache[:bsz, :end_pos]
-            pe_to_use = self.pe_cache[:bsz, :end_pos]
-        
-        scores = (torch.einsum("bhsc,btc->bhst", q_nope, kv_to_use) +
-                      torch.einsum("bhsr,btr->bhst", q_rope, pe_to_use)) * self.softmax_scale
-        
-        # Project KV values for attention computation
-        kv_cache_projected = torch.einsum("btc,hdc->bhtd", kv_to_use, kv_up_proj[:, -self.v_head_dim:])
-        
+            q = self.wq_b(self.q_norm(self.wq_a(x)))
+        q = q.view(bsz, seqlen, self.n_local_heads, self.qk_head_dim)
+        q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
+        q_pe = apply_rotary_emb(q_pe, freqs_cis)
+        kv = self.wkv_a(x)
+        kv, k_pe = torch.split(kv, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
+        k_pe = apply_rotary_emb(k_pe.unsqueeze(2), freqs_cis)
+        if self.args.attn_impl == "naive":
+            q = torch.cat([q_nope, q_pe], dim=-1)
+            kv = self.wkv_b(self.kv_norm(kv))
+            kv = kv.view(bsz, seqlen, self.n_local_heads, self.qk_nope_head_dim + self.v_head_dim)
+            k_nope, v = torch.split(kv, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
+            k = torch.cat([k_nope, k_pe.expand(-1, -1, self.n_local_heads, -1)], dim=-1)
+            self.k_cache[:bsz, start_pos:end_pos] = k
+            self.v_cache[:bsz, start_pos:end_pos] = v
+            scores = torch.einsum("bshd,bthd->bsht", q, self.k_cache[:bsz, :end_pos]) * self.softmax_scale
+        else:
+            wkv_b = self.wkv_b.weight if self.wkv_b.scale is None else weight_dequant(self.wkv_b.weight, self.wkv_b.scale, block_size) 
+            wkv_b = wkv_b.view(self.n_local_heads, -1, self.kv_lora_rank)
+            q_nope = torch.einsum("bshd,hdc->bshc", q_nope, wkv_b[:, :self.qk_nope_head_dim])
+            self.kv_cache[:bsz, start_pos:end_pos] = self.kv_norm(kv)
+            self.pe_cache[:bsz, start_pos:end_pos] = k_pe.squeeze(2)
+            scores = (torch.einsum("bshc,btc->bsht", q_nope, self.kv_cache[:bsz, :end_pos]) +
+                      torch.einsum("bshr,btr->bsht", q_pe, self.pe_cache[:bsz, :end_pos])) * self.softmax_scale
+            
         if mask is not None:
-            scores = scores.masked_fill(mask == 0, float("-inf"))
+            scores += mask.unsqueeze(1)
+            
+        scores = F.softmax(scores.float(), dim=-1, dtype=torch.float32).type_as(x)
+        
+        if self.args.attn_impl == "naive":
+            x = torch.einsum("bsht,bthd->bshd", scores, self.v_cache[:bsz, :end_pos])
         else:
-            # Causal mask: only allow attending to current and previous positions
-            q_len = scores.size(2)
-            k_len = scores.size(3)
-            causal_mask = torch.tril(torch.ones((q_len, k_len), device=scores.device, dtype=torch.bool))
-            scores = scores.masked_fill(~causal_mask, float("-inf"))
-        
-        scores = F.softmax(scores, dim=-1).type_as(x)
-        # scores = F.dropout(scores, p=self.attention_dropout, training=self.training)
-        
-        output = torch.einsum("bhst,bhtd->bhsd", scores, kv_cache_projected)
-        output = output.transpose(1, 2).flatten(2)  # Transpose back and flatten
-        output = self.out_proj(output)
-        return output
-
-
+            x = torch.einsum("bsht,btc->bshc", scores, self.kv_cache[:bsz, :end_pos])
+            x = torch.einsum("bshc,hdc->bshd", x, wkv_b[:, -self.v_head_dim:])
+            
+        x = self.wo(x.flatten(2))
+        return x
