@@ -54,7 +54,7 @@ data:
   dataset: "Aletheia-ng/pretrain_test"
   train_data_path : "data/train.bin"
   eval_data_path : "data/val.bin"
-  out_dir: "/data/checkpoints"
+  out_dir: "data/checkpoints"
 
 # model
 model:

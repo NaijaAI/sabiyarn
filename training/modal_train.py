@@ -113,9 +113,9 @@ def train_sabiyarn():
         
         # Data paths (Modal persistent volume)
         dataset=conf['data']['dataset'],
-        train_data_path="/data/train.bin",
-        eval_data_path="/data/val.bin",
-        out_dir=conf['wandb']['out_dir'],
+        train_data_path=conf['data']['train_data_path'],
+        eval_data_path=conf['data']['eval_data_path'],
+        out_dir=conf['data']['out_dir'],
         eval_interval=conf['wandb']['eval_interval'],
         log_interval=conf['wandb']['log_interval'],
         run_dir=conf['wandb']['run_dir'],
