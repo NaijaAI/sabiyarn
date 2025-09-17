@@ -107,7 +107,11 @@ class TrainingConfig:
     mla_qk_rope_head_dim: int = 64
     mla_v_head_dim: int = 128
     mla_qk_nope_head_dim: int = 128
-    
+    rope_theta: float=10000.0
+    rope_factor: int=1
+    beta_fast: int=32
+    beta_slow: int=1
+    mscale: float =1.0
     
     # MoE Configuration (only with MLA)
     use_moe: bool = False
@@ -207,6 +211,8 @@ class TrainingConfig:
     dtype: str = "bfloat16"  # "float32", "bfloat16", "float16"
     compile_model: bool = True
     
+    world_size: int = 1
+    attn_impl: str = 'optimized'  # either optimized or naive
     # Distributed training (auto-detected by model)
     auto_detect_distributed: bool = True
     seed =42
@@ -687,11 +693,13 @@ class SabiYarnTrainer:
                 qk_nope_head_dim=self.config.mla_qk_nope_head_dim,
                 attention_bias=False,
                 original_seq_len=self.config.max_seq_len,
-                rope_theta=10000.0,
-                rope_factor=1,
-                beta_fast=32,
-                beta_slow=1,
-                mscale=1.0
+                world_size = self.config.world_size,
+                attn_impl= self.config.attn_impl,
+                rope_theta=self.config.rope_theta,
+                rope_factor=self.config.rope_factor,
+                beta_fast=self.config.beta_fast,
+                beta_slow=self.config.beta_slow,
+                mscale=self.config.mscale
             )
             
         elif self.config.attention_type == AttentionType.DIFFERENTIAL_ATTENTION:
