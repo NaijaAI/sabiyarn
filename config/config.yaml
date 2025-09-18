@@ -16,6 +16,8 @@ training:
   display_model_output_iter : 768
   use_cce : True  # to use cut cross entropy or not
   scheduler: "cosine"
+  block_size: 1024
+  gemm_impl: "bf16"
 
 # wandb logging
 wandb: 
@@ -93,4 +95,9 @@ accelerate:
   mixed_precision: "fp16"
   zero_stage: 3
   gradient_clipping: 1.0
+
+env:
+  world_size: 1 # the number of GPUs
+  rank: 0 # the rank of the current GPU
+  
 
