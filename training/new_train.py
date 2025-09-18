@@ -210,7 +210,7 @@ class TrainingConfig:
     # Distributed training (auto-detected by model)
     auto_detect_distributed: bool = True
     seed =42
-    n_samples = 6000000 # Number of samples to use for training from dataset.
+    n_samples = -1 # Number of samples to use for training from dataset.
 
 # set seed
 
@@ -233,7 +233,7 @@ class SabiYarnTrainer:
         self.setup_model()
         self.setup_optimizer()
         self.setup_compilation()
-        torch.seed(config.seed)
+        # torch.seed(config.seed)
         # Training state
         # Only initialize defaults when starting from scratch.
         # When resuming, these are loaded inside setup_model().

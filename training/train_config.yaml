@@ -51,7 +51,7 @@ wandb:
 
 # data
 data: 
-  dataset: "Aletheia-ng/pretrain_test"
+  datasets: "Aletheia-ng/pretrain_test"
   train_data_path : "data/train.bin"
   eval_data_path : "data/val.bin"
   out_dir: "/data/checkpoints"
@@ -80,8 +80,7 @@ model:
 
   use_logic_network: bool = False
   use_j_linear: True
-  tie_weights: False
-  norm_eps: 1.0e-5
+  tie_weights: True
   init_std: 0.02
 
   # Layer Sharing
