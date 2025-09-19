@@ -16,7 +16,12 @@ import json
 from training import constant_tokens
 import structlog
 from dotenv import load_dotenv
-load_dotenv()
+from datasets import Dataset
+import hashlib
+import json
+from pathlib import Path
+import hashlib, lmdb
+
 
 load_dotenv()
 LOG = structlog.stdlib.get_logger()
@@ -40,6 +45,43 @@ DATASET_REVISION = os.getenv("HF_DATASET_REVISION")  # Optional pin to commit/ta
 DATASETS = config.data.datasets
 
 PROCESS_ONE_FILE_AT_A_TIME = config.model.tokenizer.process_one_file_at_a_time #Should be True
+
+class HashRegistry:
+    """Disk-backed hash registry using LMDB for billions of items."""
+    def __init__(self, db_path: str, map_size_gb: int = 50):
+        # map_size ~ maximum DB size. 50GB default; increase if needed.
+        self.env = lmdb.open(
+            db_path,
+            map_size=map_size_gb * 1024 ** 3,
+            subdir=True,
+            max_dbs=1,
+            readonly=False,
+            lock=True,
+            readahead=False,
+            meminit=False
+        )
+
+    def add_if_new(self, h: bytes) -> bool:
+        """Return True if new hash was added, False if it already existed."""
+        with self.env.begin(write=True) as txn:
+            if txn.get(h) is not None:
+                return False
+            txn.put(h, b"1", dupdata=False)
+            return True
+
+    def close(self):
+        self.env.close()
+
+
+def dedup_dataset_streaming(dataset, text_column, registry: HashRegistry, hash_algo="md5"):
+    """Return only new rows by consulting the global registry."""
+    hasher = getattr(hashlib, hash_algo)
+    keep_idx = []
+    for idx, rec in enumerate(dataset):
+        h = hasher(rec[text_column].strip().encode("utf-8")).digest()
+        if registry.add_if_new(h):
+            keep_idx.append(idx)
+    return dataset.select(keep_idx)
 
 def get_tokenizer_and_eot(tokenizer_name):
     """Initializes and returns the tokenizer and end_of_text_token."""
@@ -108,64 +150,104 @@ def write_to_memmap(dset, filename, dtype, log_prefix=""):
     arr.flush()
     LOG.info(f"{log_prefix} write to bin file complete...")
 
+def remove_duplicate_samples(
+    dataset: Dataset, text_column: str = "text", hash_algo: str = "md5") -> Dataset:
+    """
+    Stream through a HuggingFace Dataset and drop rows with duplicate text.
 
-def run(datasets_list: list =DATASETS, data_files: dict= {},  num_proc_load_dataset: int=num_proc, 
-        n_samples: int=5000000, seed: int=42):
-    """
-    Main function to process and tokenize datasets, saving to memory-mapped files.
+    - Uses only a set of short hashes in memory.
+    - Processes each example exactly once.
+
     Args:
-        datasets_list [List]: list of dataset_repo_names
-        data_files [Dict[List]]: A dictionary of lists where key must be in datasets_list and value must a set of files found in the huggingface repository
-        num_proc_load_dataset [int]: number of processes to use for dataset processing
-        n_samples [int]: Number of samples in dataset to process
-        seed [int]: For reproducibility
+        dataset: HuggingFace Dataset
+        text_column: Column name containing the text
+        hash_algo: Hash function ('md5', 'sha1', etc.)
+
+    Returns:
+        Deduplicated Dataset
     """
-    # Resolve output paths: prefer env vars set by the runtime, else config defaults
+    hasher = getattr(hashlib, hash_algo)
+    seen = set()
+    keep_idx = []
+
+    # iterate without materializing the column
+    for idx, record in enumerate(dataset):
+        h = hasher(record[text_column].strip().encode("utf-8")).digest()
+        if h not in seen:
+            seen.add(h)
+            keep_idx.append(idx)
+
+    return dataset.select(keep_idx)
+
+
+def remove_duplicate_samples_across_files(
+    dataset: Dataset, text_column: str, hash_registry: set,  hash_algo: str = "md5",) -> Dataset:
+    """
+    Deduplicate dataset rows against a global hash_registry.
+
+    Args:
+        dataset: Hugging Face Dataset
+        text_column: Column to deduplicate on
+        hash_registry: set of seen hashes (modified in place)
+        hash_algo: Hash function ('md5', 'sha1', etc.)
+
+    Returns:
+        Deduplicated Dataset
+    """
+    hasher = getattr(hashlib, hash_algo)
+    keep_idx = []
+
+    for idx, record in enumerate(dataset):
+        text = record[text_column].strip()
+        h = hasher(text.encode("utf-8")).digest()
+        if h not in hash_registry:
+            hash_registry.add(h)
+            keep_idx.append(idx)
+
+    return dataset.select(keep_idx)
+
+
+def run(
+    datasets_list: list = DATASETS,
+    data_files: dict = {},
+    num_proc_load_dataset: int = num_proc,
+    n_samples: int = 5_000_000,
+    seed: int = 42,
+    hash_algo: str = "md5",
+    registry_cache: str = "global_hash_registry.lmdb",
+):
+    """
+    Process, deduplicate (globally), tokenize and binarize many HF datasets.
+    Dedup uses a disk-backed LMDB registry to handle billions of samples.
+    """
+    # ------- Setup paths and state -----------------------------------------
     env_train_path = os.getenv("TRAIN_DATA_PATH")
-    env_val_path = os.getenv("VAL_DATA_PATH")
-    default_train_path = (
-        config.data.train_data_path if hasattr(config, "data") and hasattr(config.data, "train_data_path")
-        else getattr(config, "train_data_path", "data/train.bin")
-    )
-    default_val_path = (
-        config.data.eval_data_path if hasattr(config, "data") and hasattr(config.data, "eval_data_path")
-        else getattr(config, "eval_data_path", "data/val.bin")
-    )
-    TRAIN_BIN_PATH = env_train_path or default_train_path
-    VAL_BIN_PATH = env_val_path or default_val_path
-    # Ensure directories exist
+    env_val_path   = os.getenv("VAL_DATA_PATH")
+    TRAIN_BIN_PATH = env_train_path or getattr(config, "train_data_path", "data/train.bin")
+    VAL_BIN_PATH   = env_val_path   or getattr(config, "eval_data_path",  "data/val.bin")
     os.makedirs(os.path.dirname(TRAIN_BIN_PATH), exist_ok=True)
-    os.makedirs(os.path.dirname(VAL_BIN_PATH), exist_ok=True)
-    # Persist processed-files ledger on a stable path so repeated runs don't reprocess.
-    # Prefer PREP_STATE_PATH env; else default to the directory of TRAIN_BIN_PATH (typically under /data on Modal).
+    os.makedirs(os.path.dirname(VAL_BIN_PATH),   exist_ok=True)
+
     state_path_env = os.getenv("PREP_STATE_PATH")
-    default_state_dir = os.path.dirname(TRAIN_BIN_PATH) if TRAIN_BIN_PATH else "."
-    STATE_PATH = state_path_env or os.path.join(default_state_dir, "data_struct.json")
+    STATE_PATH = state_path_env or os.path.join(os.path.dirname(TRAIN_BIN_PATH), "data_struct.json")
 
     files_processed = {}
     if os.path.exists(STATE_PATH):
-        try:
-            with open(STATE_PATH, "r") as t:
-                files_processed = json.load(t)
-        except Exception:
-            LOG.warning(f"Failed to read state file at {STATE_PATH}; starting fresh...")
-            files_processed = {}
-    else:
-        LOG.info(f"State file does not exist at {STATE_PATH}. Starting fresh...")
+        with open(STATE_PATH, "r") as t:
+            files_processed = json.load(t)
 
-    tokenizer, end_of_text_token = get_tokenizer_and_eot(config.model.tokenizer.name)
+    tokenizer, eot = get_tokenizer_and_eot(config.model.tokenizer.name)
+    def process_func_wrapper(example): return process_example(example, tokenizer, eot)
 
-    # Define the process function once, outside the loop and with its dependencies
-    # This avoids re-initializing tokenizer multiple times in multiprocessing
-    def process_func_wrapper(example):
-        return process_example(example, tokenizer, end_of_text_token)
+    # ------- GLOBAL HASH REGISTRY (Disk-backed) ----------------------------
+    registry = HashRegistry(db_path=registry_cache, map_size_gb=200)  # enlarge map_size if needed
 
-    for dataset_name in datasets_list: # Use dataset_name to distinguish from loaded_dataset
-        # This list will store files processed *for the current dataset_name* in this run
-        current_dataset_processed_files = files_processed.get(dataset_name, [])
+    # ------- Main loop -----------------------------------------------------
+    for dataset_name in datasets_list:
+        current_dataset_processed = files_processed.get(dataset_name, [])
 
         if not PROCESS_ONE_FILE_AT_A_TIME:
-            LOG.info(f"Downloading dataset '{dataset_name}'...")
+            LOG.info(f"Loading dataset '{dataset_name}'…")
             load_kwargs = dict(
                 num_proc=num_proc_load_dataset,
                 trust_remote_code=True,
@@ -174,134 +256,278 @@ def run(datasets_list: list =DATASETS, data_files: dict= {},  num_proc_load_data
             )
             if DATASET_REVISION:
                 load_kwargs["revision"] = DATASET_REVISION
-            try:
-                loaded_dataset = load_dataset(dataset_name, data_files= data_files.get(dataset_name), **load_kwargs)
-            except ValueError as e:
-                # Handle cache hash mismatch by forcing re-download
-                if "Couldn't find cache" in str(e):
-                    load_kwargs["download_config"] = DownloadConfig(force_download=True, resume_download=False, use_etag=False)
-                    loaded_dataset = load_dataset(dataset_name, data_files=data_files.get(dataset_name),  **load_kwargs)
-                else:
-                    raise
-            # By default only contains the 'train' split, so create a test split
-            train_split = loaded_dataset["train"]
-            n_samples = min(n_samples, len(train_split)) if (n_samples != -1 or n_samples is not None) else len(train_split)  # number of samples you want
-            seed = seed # fixed seed for reproducibility
 
-            # Shuffle and select n samples
-            train_split = train_split.shuffle(seed=seed).select(range(n_samples))
-            dataset_length = len(train_split)
-            test_size = calculate_test_size(dataset_length)
+            ds = load_dataset(dataset_name,
+                              data_files=data_files.get(dataset_name),
+                              **load_kwargs)["train"]
 
-            LOG.info("Creating splits...")
-            if test_size == 0: # Very small dataset, no test split
-                split_dataset = {"train": train_split, "val": train_split} # Use train for val as well
+            ds = ds.shuffle(seed=seed)
+            if n_samples != -1:
+                ds = ds.select(range(min(n_samples, len(ds))))
+
+            # 1️⃣ GLOBAL DEDUP
+            LOG.info(f"Deduplicating {dataset_name}…")
+            ds = dedup_dataset_streaming(ds, "text", registry, hash_algo)
+
+            # Split, tokenize, save
+            test_size = calculate_test_size(len(ds))
+            split_ds = ds if test_size == 0 else ds.train_test_split(test_size=test_size, seed=2357)
+            if test_size != 0:
+                split_ds["val"] = split_ds.pop("test")
             else:
-                split_dataset = train_split.train_test_split(
-                    test_size=test_size, seed=2357, shuffle=True
-                )
-                split_dataset["val"] = split_dataset.pop("test") # Rename test to val
+                split_ds = {"train": ds, "val": ds}
 
-            LOG.info("Tokenizing splits...")
-            tokenized_dataset = split_dataset.map(
-                process_func_wrapper, # Use the wrapper here
-                remove_columns=['text'],
-                desc=f"tokenizing {dataset_name} splits",
-                num_proc=num_proc,
-            )
-            LOG.info("Tokenizing and preprocessing complete..")
+            tokenized = split_ds.map(process_func_wrapper,
+                                     remove_columns=["text"],
+                                     desc=f"tokenizing {dataset_name}",
+                                     num_proc=num_proc)
 
-            LOG.info("Concatenating and binarizing splits...")
-            for split, dset in tokenized_dataset.items():
-                filename = TRAIN_BIN_PATH if split.lower() == "train" else VAL_BIN_PATH
-                write_to_memmap(dset, filename, np.uint16, log_prefix=f"[{dataset_name} - {split}]")
-            
-            # For this mode, consider the whole dataset as processed once done
-            all_files_in_repo = list_repo_files(dataset_name, repo_type="dataset", token=READ_TOKEN)
-            current_dataset_processed_files.extend(all_files_in_repo)
-            # Remove duplicates if any
-            current_dataset_processed_files = list(set(current_dataset_processed_files))
+            for split, d in tokenized.items():
+                out_file = TRAIN_BIN_PATH if split == "train" else VAL_BIN_PATH
+                write_to_memmap(d, out_file, np.uint16, log_prefix=f"[{dataset_name} - {split}]")
 
-
-        else: # PROCESS_ONE_FILE_AT_A_TIME
             all_files = list_repo_files(dataset_name, repo_type="dataset", token=READ_TOKEN)
-            
-            files_to_process = [f for f in all_files if f not in current_dataset_processed_files and f.endswith('.parquet')]
+            files_processed[dataset_name] = list(set(current_dataset_processed + all_files))
 
-            if not files_to_process:
-                LOG.info(f"All files for dataset '{dataset_name}' already processed.")
-                continue
+        else:
+            # ---------- One-file-at-a-time branch ----------
+            all_files = list_repo_files(dataset_name, repo_type="dataset", token=READ_TOKEN)
+            files_to_process = [f for f in all_files if f not in current_dataset_processed and f.endswith(".parquet")]
 
-            for file in files_to_process:
-                # Sanitize potentially odd filenames (remove control chars)
-                sanitized_file = re.sub(r"[\x00-\x1f\x7f]", "", file).strip()
-                LOG.info(f"Downloading and processing {sanitized_file} from dataset '{dataset_name}'...")
+            for fpath in files_to_process:
+                LOG.info(f"Processing {fpath} …")
+                local_path = hf_hub_download(dataset_name, filename=fpath,
+                                            repo_type="dataset",
+                                            revision=DATASET_REVISION or "main",
+                                            token=READ_TOKEN)
+                dset = load_dataset("parquet", data_files={"train": local_path})["train"]
 
-                # Download the parquet file locally via HF hub to avoid URL quoting issues
-                revision = DATASET_REVISION if DATASET_REVISION else "main"
-                local_path = hf_hub_download(
-                    repo_id=dataset_name,
-                    filename=sanitized_file,
-                    repo_type="dataset",
-                    revision=revision,
-                    token=READ_TOKEN,
-                )
+                # 1️⃣ GLOBAL DEDUP for this shard
+                dset = dedup_dataset_streaming(dset, "text", registry, hash_algo)
 
-                # Load from the local parquet path
-                loaded_dataset_file = load_dataset(
-                    "parquet",
-                    data_files={"train": local_path},
-                )
-
-                train_split_file = loaded_dataset_file["train"]
-                dataset_length = len(train_split_file)
-                test_size = calculate_test_size(dataset_length)
-
-                if dataset_length < 50 or test_size == 0:
-                    split_dataset_file = {"train": train_split_file, "val": train_split_file} # Treat small datasets as both train/val
-                    small_data = True
+                test_size = calculate_test_size(len(dset))
+                if len(dset) < 50 or test_size == 0:
+                    split_d = {"train": dset, "val": dset}
                 else:
-                    small_data = False
-                    split_dataset_file = train_split_file.train_test_split(
-                        test_size=test_size, seed=2357, shuffle=True
-                    )
-                    split_dataset_file["val"] = split_dataset_file.pop("test")
+                    tmp = dset.train_test_split(test_size=test_size, seed=2357)
+                    split_d = {"train": tmp["train"], "val": tmp["test"]}
 
-                LOG.info("Tokenizing splits...")
-                tokenized_dataset_file = split_dataset_file.map(
-                    process_func_wrapper, # Use the wrapper here
-                    remove_columns=['text'], # This was commented out in original, but makes sense to keep
-                    desc=f"tokenizing {file} splits",
-                    num_proc=num_proc,
-                )
+                tokenized = {k: v.map(process_func_wrapper,
+                                    remove_columns=["text"],
+                                    num_proc=num_proc,
+                                    desc=f"tokenizing {fpath} {k}")
+                            for k, v in split_d.items()}
 
-                LOG.info("Concatenating and binarizing splits...")
-                for split, dset in tokenized_dataset_file.items():
-                    filename = TRAIN_BIN_PATH if split.lower() == "train" else VAL_BIN_PATH
-                    write_to_memmap(dset, filename, np.uint16, log_prefix=f"[{file} - {split}]")
+                for split, d in tokenized.items():
+                    out_file = TRAIN_BIN_PATH if split == "train" else VAL_BIN_PATH
+                    write_to_memmap(d, out_file, np.uint16, log_prefix=f"[{dataset_name}:{fpath}-{split}]")
 
-                # Update processed files immediately after a file is successfully processed
-                current_dataset_processed_files.append(file)
-                files_processed[dataset_name] = current_dataset_processed_files # Update the main dict
-                try:
-                    with open(STATE_PATH, "w") as f:
-                        json.dump(files_processed, f, indent=4) # Save progress
-                except Exception as e:
-                    LOG.warning(f"Failed to write state file {STATE_PATH}: {e}")
-                LOG.info(f"Successfully processed and saved progress for {file}.")
+                current_dataset_processed.append(fpath)
+                files_processed[dataset_name] = current_dataset_processed
+                with open(STATE_PATH, "w") as fp:
+                    json.dump(files_processed, fp, indent=2)
 
-        # After processing all files/the entire dataset, update the main files_processed dictionary
-        # This is important for the `PROCESS_ONE_FILE_AT_A_TIME = False` case
-        files_processed[dataset_name] = current_dataset_processed_files
-        # For the `PROCESS_ONE_FILE_AT_A_TIME = False` case, we save after each dataset too
-        # To avoid data loss if crash between datasets.
-        if not PROCESS_ONE_FILE_AT_A_TIME:
-            try:
-                with open(STATE_PATH, "w") as f:
-                    json.dump(files_processed, f, indent=4)
-                LOG.info(f"Successfully processed and saved progress for entire dataset '{dataset_name}'.")
-            except Exception as e:
-                LOG.warning(f"Failed to write state file {STATE_PATH}: {e}")
+        # Save ledger after each dataset
+        with open(STATE_PATH, "w") as fp:
+            json.dump(files_processed, fp, indent=2)
+        LOG.info(f"Finished dataset {dataset_name}")
+
+    registry.close()
+    LOG.info("All datasets processed and globally deduplicated.")
+
+# def run(datasets_list: list =DATASETS, data_files: dict= {},  num_proc_load_dataset: int=num_proc, 
+#         n_samples: int=5000000, seed: int=42, hash_algo: str = "md5", registry_cache: str | None = None):
+#     """
+#     Main function to process and tokenize datasets, saving to memory-mapped files.
+#     Args:
+#         datasets_list [List]: list of dataset_repo_names
+#         data_files [Dict[List]]: A dictionary of lists where key must be in datasets_list and value must a set of files found in the huggingface repository
+#         num_proc_load_dataset [int]: number of processes to use for dataset processing
+#         n_samples [int]: Number of samples in dataset to process
+#         seed [int]: For reproducibility
+#     """
+#     # Resolve output paths: prefer env vars set by the runtime, else config defaults
+#     env_train_path = os.getenv("TRAIN_DATA_PATH")
+#     env_val_path = os.getenv("VAL_DATA_PATH")
+#     default_train_path = (
+#         config.data.train_data_path if hasattr(config, "data") and hasattr(config.data, "train_data_path")
+#         else getattr(config, "train_data_path", "data/train.bin")
+#     )
+#     default_val_path = (
+#         config.data.eval_data_path if hasattr(config, "data") and hasattr(config.data, "eval_data_path")
+#         else getattr(config, "eval_data_path", "data/val.bin")
+#     )
+#     TRAIN_BIN_PATH = env_train_path or default_train_path
+#     VAL_BIN_PATH = env_val_path or default_val_path
+#     # Ensure directories exist
+#     os.makedirs(os.path.dirname(TRAIN_BIN_PATH), exist_ok=True)
+#     os.makedirs(os.path.dirname(VAL_BIN_PATH), exist_ok=True)
+#     # Persist processed-files ledger on a stable path so repeated runs don't reprocess.
+#     # Prefer PREP_STATE_PATH env; else default to the directory of TRAIN_BIN_PATH (typically under /data on Modal).
+#     state_path_env = os.getenv("PREP_STATE_PATH")
+#     default_state_dir = os.path.dirname(TRAIN_BIN_PATH) if TRAIN_BIN_PATH else "."
+#     STATE_PATH = state_path_env or os.path.join(default_state_dir, "data_struct.json")
+
+#     files_processed = {}
+#     if os.path.exists(STATE_PATH):
+#         try:
+#             with open(STATE_PATH, "r") as t:
+#                 files_processed = json.load(t)
+#         except Exception:
+#             LOG.warning(f"Failed to read state file at {STATE_PATH}; starting fresh...")
+#             files_processed = {}
+#     else:
+#         LOG.info(f"State file does not exist at {STATE_PATH}. Starting fresh...")
+
+#     tokenizer, end_of_text_token = get_tokenizer_and_eot(config.model.tokenizer.name)
+
+#     # Define the process function once, outside the loop and with its dependencies
+#     # This avoids re-initializing tokenizer multiple times in multiprocessing
+#     def process_func_wrapper(example):
+#         return process_example(example, tokenizer, end_of_text_token)
+
+#     for dataset_name in datasets_list: # Use dataset_name to distinguish from loaded_dataset
+#         # This list will store files processed *for the current dataset_name* in this run
+#         current_dataset_processed_files = files_processed.get(dataset_name, [])
+
+#         if not PROCESS_ONE_FILE_AT_A_TIME:
+#             LOG.info(f"Downloading dataset '{dataset_name}'...")
+#             load_kwargs = dict(
+#                 num_proc=num_proc_load_dataset,
+#                 trust_remote_code=True,
+#                 token=READ_TOKEN,
+#                 verification_mode="no_checks",
+#             )
+#             if DATASET_REVISION:
+#                 load_kwargs["revision"] = DATASET_REVISION
+#             try:
+#                 loaded_dataset = load_dataset(dataset_name, data_files= data_files.get(dataset_name), **load_kwargs)
+#             except ValueError as e:
+#                 # Handle cache hash mismatch by forcing re-download
+#                 if "Couldn't find cache" in str(e):
+#                     load_kwargs["download_config"] = DownloadConfig(force_download=True, resume_download=False, use_etag=False)
+#                     loaded_dataset = load_dataset(dataset_name, data_files=data_files.get(dataset_name),  **load_kwargs)
+#                 else:
+#                     raise
+#             # By default only contains the 'train' split, so create a test split
+#             train_split = loaded_dataset["train"]
+#             n_samples = min(n_samples, len(train_split)) if (n_samples != -1 or n_samples is not None) else len(train_split)  # number of samples you want
+#             seed = seed # fixed seed for reproducibility
+
+#             # Shuffle and select n samples
+#             train_split = train_split.shuffle(seed=seed).select(range(n_samples))
+#             dataset_length = len(train_split)
+#             test_size = calculate_test_size(dataset_length)
+
+#             LOG.info("Creating splits...")
+#             if test_size == 0: # Very small dataset, no test split
+#                 split_dataset = {"train": train_split, "val": train_split} # Use train for val as well
+#             else:
+#                 split_dataset = train_split.train_test_split(
+#                     test_size=test_size, seed=2357, shuffle=True
+#                 )
+#                 split_dataset["val"] = split_dataset.pop("test") # Rename test to val
+
+#             LOG.info("Tokenizing splits...")
+#             tokenized_dataset = split_dataset.map(
+#                 process_func_wrapper, # Use the wrapper here
+#                 remove_columns=['text'],
+#                 desc=f"tokenizing {dataset_name} splits",
+#                 num_proc=num_proc,
+#             )
+#             LOG.info("Tokenizing and preprocessing complete..")
+
+#             LOG.info("Concatenating and binarizing splits...")
+#             for split, dset in tokenized_dataset.items():
+#                 filename = TRAIN_BIN_PATH if split.lower() == "train" else VAL_BIN_PATH
+#                 write_to_memmap(dset, filename, np.uint16, log_prefix=f"[{dataset_name} - {split}]")
+            
+#             # For this mode, consider the whole dataset as processed once done
+#             all_files_in_repo = list_repo_files(dataset_name, repo_type="dataset", token=READ_TOKEN)
+#             current_dataset_processed_files.extend(all_files_in_repo)
+#             # Remove duplicates if any
+#             current_dataset_processed_files = list(set(current_dataset_processed_files))
+
+
+#         else: # PROCESS_ONE_FILE_AT_A_TIME
+#             all_files = list_repo_files(dataset_name, repo_type="dataset", token=READ_TOKEN)
+            
+#             files_to_process = [f for f in all_files if f not in current_dataset_processed_files and f.endswith('.parquet')]
+
+#             if not files_to_process:
+#                 LOG.info(f"All files for dataset '{dataset_name}' already processed.")
+#                 continue
+
+#             for file in files_to_process:
+#                 # Sanitize potentially odd filenames (remove control chars)
+#                 sanitized_file = re.sub(r"[\x00-\x1f\x7f]", "", file).strip()
+#                 LOG.info(f"Downloading and processing {sanitized_file} from dataset '{dataset_name}'...")
+
+#                 # Download the parquet file locally via HF hub to avoid URL quoting issues
+#                 revision = DATASET_REVISION if DATASET_REVISION else "main"
+#                 local_path = hf_hub_download(
+#                     repo_id=dataset_name,
+#                     filename=sanitized_file,
+#                     repo_type="dataset",
+#                     revision=revision,
+#                     token=READ_TOKEN,
+#                 )
+
+#                 # Load from the local parquet path
+#                 loaded_dataset_file = load_dataset(
+#                     "parquet",
+#                     data_files={"train": local_path},
+#                 )
+
+#                 train_split_file = loaded_dataset_file["train"]
+#                 dataset_length = len(train_split_file)
+#                 test_size = calculate_test_size(dataset_length)
+
+#                 if dataset_length < 50 or test_size == 0:
+#                     split_dataset_file = {"train": train_split_file, "val": train_split_file} # Treat small datasets as both train/val
+#                     small_data = True
+#                 else:
+#                     small_data = False
+#                     split_dataset_file = train_split_file.train_test_split(
+#                         test_size=test_size, seed=2357, shuffle=True
+#                     )
+#                     split_dataset_file["val"] = split_dataset_file.pop("test")
+
+#                 LOG.info("Tokenizing splits...")
+#                 tokenized_dataset_file = split_dataset_file.map(
+#                     process_func_wrapper, # Use the wrapper here
+#                     remove_columns=['text'], # This was commented out in original, but makes sense to keep
+#                     desc=f"tokenizing {file} splits",
+#                     num_proc=num_proc,
+#                 )
+
+#                 LOG.info("Concatenating and binarizing splits...")
+#                 for split, dset in tokenized_dataset_file.items():
+#                     filename = TRAIN_BIN_PATH if split.lower() == "train" else VAL_BIN_PATH
+#                     write_to_memmap(dset, filename, np.uint16, log_prefix=f"[{file} - {split}]")
+
+#                 # Update processed files immediately after a file is successfully processed
+#                 current_dataset_processed_files.append(file)
+#                 files_processed[dataset_name] = current_dataset_processed_files # Update the main dict
+#                 try:
+#                     with open(STATE_PATH, "w") as f:
+#                         json.dump(files_processed, f, indent=4) # Save progress
+#                 except Exception as e:
+#                     LOG.warning(f"Failed to write state file {STATE_PATH}: {e}")
+#                 LOG.info(f"Successfully processed and saved progress for {file}.")
+
+#         # After processing all files/the entire dataset, update the main files_processed dictionary
+#         # This is important for the `PROCESS_ONE_FILE_AT_A_TIME = False` case
+#         files_processed[dataset_name] = current_dataset_processed_files
+#         # For the `PROCESS_ONE_FILE_AT_A_TIME = False` case, we save after each dataset too
+#         # To avoid data loss if crash between datasets.
+#         if not PROCESS_ONE_FILE_AT_A_TIME:
+#             try:
+#                 with open(STATE_PATH, "w") as f:
+#                     json.dump(files_processed, f, indent=4)
+#                 LOG.info(f"Successfully processed and saved progress for entire dataset '{dataset_name}'.")
+#             except Exception as e:
+#                 LOG.warning(f"Failed to write state file {STATE_PATH}: {e}")
 
 if __name__ == "__main__":
     run()
