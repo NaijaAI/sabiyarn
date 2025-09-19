@@ -1,8 +1,7 @@
-import math
 import os
 import dataclasses
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 from enum import Enum
 
 import torch
@@ -11,7 +10,7 @@ from torch import nn
 
 from .memory_reasoning import LogicNetwork
 from .differential_attention import DiffAttention, DiffAttnArgs
-from .MLA import MLA, MLAConfig #, ColumnParallelLinear, RowParallelLinear, linear
+from .MLA import MLA, MLAConfig
 from .MHA import CausalSelfAttention, SelfAttnArgs
 from .GQA import GroupedQueryAttention, GQAArgs
 
@@ -484,7 +483,6 @@ class SabiYarn(nn.Module):
 
         Args:
             params (ModelArgs): Model configuration parameters.
-            diff_attn_config( DiffAttnArgs): configuration parameters for Differential Attention.
 
         Attributes:
             params (ModelArgs): Model configuration parameters.

@@ -314,7 +314,7 @@ class SabiYarnTrainer:
         self.setup_model()
         self.setup_optimizer()
         self.setup_compilation()
-        torch.seed(config.seed)
+        # torch.seed(config.seed)
         # Training state
         # Only initialize defaults when starting from scratch.
         # When resuming, these are loaded inside setup_model().

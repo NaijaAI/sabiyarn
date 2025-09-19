@@ -42,7 +42,7 @@ volume = modal.Volume.from_name("sabiyarn-data", create_if_missing=True)
     cpu=8,
     # memory=32768,  # 32GB RAM
 )
-def train_sabiyarn():
+def train_sabiyarn(volume: modal.Volume):
     """
     Train SabiYarn model on Modal GPU with comprehensive monitoring.
     
@@ -152,6 +152,7 @@ def train_sabiyarn():
     
     try:
         trainer.train()
+        volume.commit()
         print("✅ Training completed successfully!")
         return True
     except Exception as e:
@@ -166,7 +167,7 @@ def main():
     # print("📁 Preparing data...")
     # prepare_data.remote()
 
-    result = train_sabiyarn.remote()
+    result = train_sabiyarn.remote(volume)
     
     if result:
         print("🎉 Training completed successfully!")

@@ -8,7 +8,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root =  os.path.dirname(current_dir)
 
 # print(project_root)
-config_path = os.path.join(project_root, "config", "config.yaml")
+config_path = "/app/training/train_config.yaml"
 # print(config_path)
 config = OmegaConf.load(config_path)
 
