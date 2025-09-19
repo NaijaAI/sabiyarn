@@ -216,7 +216,82 @@ class TrainingConfig:
     # Distributed training (auto-detected by model)
     auto_detect_distributed: bool = True
     seed =42
-    n_samples = 6000000 # Number of samples to use for training from dataset.
+    n_samples = -1 # Number of samples to use for training from dataset.
+    
+    ## The below parameter should be used for only testing
+    hf_repo_files = {
+        "Aletheia-ng/pretrain_test": [
+            'Roleplay-Amharic_english_translation_batch_3846_1923-train.parquet',
+            'TinyStories_yoruba_english_translation_batch_2760_1380-train.parquet',
+            'afriberta-corpus_afaanoromoo_language_identification_batch_20000_20001-train.parquet',
+            #  'afriberta-corpus_afaanoromoo_language_identification_batch_410841_410841-train.parquet',
+            'afriberta-corpus_afaanoromoo_monolingual_batch_410841_410841-train.parquet',
+            'afriberta-corpus_gahuza_language_identification_batch_20000_20001-train.parquet',
+            'afriberta-corpus_gahuza_monolingual_batch_131953_131953-train.parquet',
+            'afriberta-corpus_igbo_monolingual_batch_337082_337082-train.parquet',
+            'afriberta-corpus_pidgin_monolingual_batch_161843_161843-train.parquet',
+            'afriberta-corpus_somali_language_identification_batch_20000_20001-train.parquet',
+            'afriberta-corpus_somali_monolingual_batch_500000_500000-train.parquet',
+            'afriberta-corpus_swahili_monolingual_batch_500000_1000000-train.parquet',
+            'afriberta-corpus_tigrinya_language_identification_batch_12076_12076-train.parquet',
+            'afriberta-corpus_tigrinya_monolingual_batch_12076_12076-train.parquet',
+            'afriberta-corpus_yoruba_monolingual_batch_149148_149148-train.parquet',
+            'afrisenti_amh_sentiment_classification_batch_5984_5984-train.parquet',
+            'afrisenti_eng_sentiment_classification_batch_11763_11763-train.parquet',
+            'afrisenti_eng_sentiment_classification_batch_1681_1681-validation.parquet',
+            'afrisenti_hau_sentiment_classification_batch_14172_14172-train.parquet',
+            'afrisenti_ibo_sentiment_classification_batch_10192_10192-train.parquet',
+            'afrisenti_swa_sentiment_classification_batch_1810_1810-train.parquet',
+            'afrisenti_swa_sentiment_classification_batch_453_453-validation.parquet',
+            'afrisenti_yor_sentiment_classification_batch_8522_8522-train.parquet',
+            'c4_af_language_identification_batch_20000_20001-train.parquet',
+            'c4_af_monolingual_batch_500000_1000000-train.parquet',
+            'c4_am_language_identification_batch_20000_20001-train.parquet',
+            'c4_am_monolingual_batch_162870_162870-train.parquet',
+            'c4_ha_language_identification_batch_20000_20001-train.parquet',
+            'c4_ha_monolingual_batch_247479_247479-train.parquet',
+            'c4_ig_language_identification_batch_20000_20001-train.parquet',
+            'c4_ig_monolingual_batch_92909_92909-train.parquet',
+            'c4_so_language_identification_batch_20000_20001-train.parquet',
+            'c4_so_monolingual_batch_500000_500000-train.parquet',
+            'c4_st_language_identification_batch_20000_20001-train.parquet',
+            'c4_st_monolingual_batch_66837_66837-train.parquet',
+            'c4_sw_language_identification_batch_20000_20001-train.parquet',
+            'c4_sw_monolingual_batch_500000_500000-train.parquet',
+            'c4_xh_language_identification_batch_20000_20001-train.parquet',
+            'c4_xh_monolingual_batch_69048_69048-train.parquet',
+            'c4_yo_language_identification_batch_20000_20001-train.parquet',
+            'c4_yo_monolingual_batch_46214_46214-train.parquet',
+            'c4_zu_language_identification_batch_20000_20001-train.parquet',
+            'c4_zu_monolingual_batch_500000_500000-train.parquet',
+            'fineweb-bbc-news_CC-MAIN-2013-20_monolingual_batch_179829_179829-train.parquet',
+            'fineweb-bbc-news_CC-MAIN-2013-20_monolingual_batch_20000_20001-train.parquet',
+            'flores_101_afr_topic_classification_batch_1012_1012-devtest.parquet',
+            'flores_101_afr_topic_classification_batch_997_997-dev.parquet',
+            'flores_101_eng_topic_classification_batch_1012_1012-devtest.parquet',
+            'flores_101_eng_topic_classification_batch_997_997-dev.parquet',
+            'flores_101_hau_topic_classification_batch_1012_1012-devtest.parquet',
+            'flores_101_hau_topic_classification_batch_997_997-dev.parquet',
+            'flores_101_ibo_topic_classification_batch_1012_1012-devtest.parquet',
+            'flores_101_ibo_topic_classification_batch_997_997-dev.parquet',
+            'flores_101_som_topic_classification_batch_1012_1012-devtest.parquet',
+            'flores_101_som_topic_classification_batch_997_997-dev.parquet',
+            'flores_101_swh_topic_classification_batch_1012_1012-devtest.parquet',
+            'flores_101_swh_topic_classification_batch_997_997-dev.parquet',
+            'flores_101_wol_topic_classification_batch_1012_1012-devtest.parquet',
+            'flores_101_wol_topic_classification_batch_997_997-dev.parquet',
+            'flores_101_xho_topic_classification_batch_1012_1012-devtest.parquet',
+            'flores_101_xho_topic_classification_batch_997_997-dev.parquet',
+            'flores_101_yor_topic_classification_batch_1012_1012-devtest.parquet',
+            'flores_101_yor_topic_classification_batch_997_997-dev.parquet',
+            'flores_101_zul_topic_classification_batch_1012_1012-devtest.parquet',
+            'flores_101_zul_topic_classification_batch_997_997-dev.parquet',
+            'kinyarwanda_monolingual_v01.0_kinyarwanda_monolingual_batch_78733_78733-train.parquet',
+            'swahili-english-translation_swahili_translation_batch_500000_1000000-train.parquet',
+            'twi-english-parallel-synthetic-50m_twi_translation_batch_500000_1000000-train.parquet',
+            'xlsum_amharic_headline_batch_57294_57294-train.parquet',
+            'xlsum_amharic_headline_batch_719_719-validation.parquet']
+    }
 
 # set seed
 
@@ -628,7 +703,7 @@ class SabiYarnTrainer:
             except Exception:
                 LOG.info("Using existing bins (could not read counts)")
         else:
-            prepare.run([self.config.dataset], os.cpu_count(), self.config.n_samples, self.config.seed)
+            prepare.run([self.config.dataset], self.config.hf_repo_files, os.cpu_count(), self.config.n_samples, self.config.seed)
         
         # Initialize tokenizer if available
         self.tokenizer = None

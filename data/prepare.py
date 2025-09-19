@@ -109,9 +109,16 @@ def write_to_memmap(dset, filename, dtype, log_prefix=""):
     LOG.info(f"{log_prefix} write to bin file complete...")
 
 
-def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc, n_samples=5000000, seed=42):
+def run(datasets_list: list =DATASETS, data_files: dict= {},  num_proc_load_dataset: int=num_proc, 
+        n_samples: int=5000000, seed: int=42):
     """
     Main function to process and tokenize datasets, saving to memory-mapped files.
+    Args:
+        datasets_list [List]: list of dataset_repo_names
+        data_files [Dict[List]]: A dictionary of lists where key must be in datasets_list and value must a set of files found in the huggingface repository
+        num_proc_load_dataset [int]: number of processes to use for dataset processing
+        n_samples [int]: Number of samples in dataset to process
+        seed [int]: For reproducibility
     """
     # Resolve output paths: prefer env vars set by the runtime, else config defaults
     env_train_path = os.getenv("TRAIN_DATA_PATH")
@@ -168,12 +175,12 @@ def run(datasets_list=DATASETS, num_proc_load_dataset=num_proc, n_samples=500000
             if DATASET_REVISION:
                 load_kwargs["revision"] = DATASET_REVISION
             try:
-                loaded_dataset = load_dataset(dataset_name, **load_kwargs)
+                loaded_dataset = load_dataset(dataset_name, data_files= data_files.get(dataset_name), **load_kwargs)
             except ValueError as e:
                 # Handle cache hash mismatch by forcing re-download
                 if "Couldn't find cache" in str(e):
                     load_kwargs["download_config"] = DownloadConfig(force_download=True, resume_download=False, use_etag=False)
-                    loaded_dataset = load_dataset(dataset_name, **load_kwargs)
+                    loaded_dataset = load_dataset(dataset_name, data_files=data_files.get(dataset_name),  **load_kwargs)
                 else:
                     raise
             # By default only contains the 'train' split, so create a test split
