@@ -11,10 +11,10 @@ from .kernel import act_quant, weight_dequant, fp8_gemm
 from omegaconf import OmegaConf
 import math
 
-config = OmegaConf.load("../config/config.yaml")
-world_size = config.env.world_size # the number of GPUs
-rank = config.env.rank # the rank of the current GPU
-block_size = config.training.block_size # the block size of the input tensor. useful when using fp8
+config = OmegaConf.load("/app/training/train_config.yaml")
+world_size = config.ddp.world_size # the number of GPUs
+rank = config.ddp.rank # the rank of the current GPU
+block_size = config.model.max_seq_len # the block size of the input tensor. useful when using fp8
 gemm_impl: Literal["bf16", "fp8"] = config.training.gemm_impl
 
 @dataclass
