@@ -218,6 +218,11 @@ class TrainingConfig:
     seed =42
     n_samples = -1 # Number of samples to use for training from dataset.
     
+    # Hash registry for data deduplication
+    hash_algo: str = "md5",
+    registry_cache: str = "global_hash_registry.lmdb",
+    map_size_gb: int = 50,
+    
     ## The below parameter should be used for only testing
     hf_repo_files = {
         "Aletheia-ng/pretrain_test": [
@@ -703,7 +708,8 @@ class SabiYarnTrainer:
             except Exception:
                 LOG.info("Using existing bins (could not read counts)")
         else:
-            prepare.run([self.config.dataset], self.config.hf_repo_files, os.cpu_count(), self.config.n_samples, self.config.seed)
+            prepare.run([self.config.dataset], self.config.hf_repo_files, os.cpu_count(), self.config.n_samples, self.config.seed,
+                        self.config.hash_algo, self.config.registry_cache, self.config.map_size_gb)
         
         # Initialize tokenizer if available
         self.tokenizer = None

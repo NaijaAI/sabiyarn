@@ -143,6 +143,11 @@ def train_sabiyarn(volume: modal.Volume):
 
         # Generation during training
         enable_generation_during_training=conf['training']['enable_generation_during_training'],
+        
+        # hashing registry for data deduplication
+        hash_algo= conf['hash']['hash_algo'],
+        registry_cache= conf['hash']['registry_cache'],
+        map_size_gb= conf['hash']['map_size_gb'],
     )
     
     print("Starting SabiYarn training on Modal GPU...")

@@ -136,3 +136,9 @@ accelerate:
   zero_stage: 3
   gradient_clipping: 1.0
 
+
+# Hashing registry for data deduplication
+hash:
+  hash_algo: "md5"
+  registry_cache: "/data/global_hash_registry.lmdb"
+  map_size_gb:  50

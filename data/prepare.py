@@ -215,6 +215,7 @@ def run(
     seed: int = 42,
     hash_algo: str = "md5",
     registry_cache: str = "global_hash_registry.lmdb",
+    map_size_gb: int = 50,
 ):
     """
     Process, deduplicate (globally), tokenize and binarize many HF datasets.
@@ -230,7 +231,9 @@ def run(
 
     state_path_env = os.getenv("PREP_STATE_PATH")
     STATE_PATH = state_path_env or os.path.join(os.path.dirname(TRAIN_BIN_PATH), "data_struct.json")
-
+    
+    num_proc_load_dataset = min(num_proc_load_dataset, max(1, os.cpu_count()-1))
+    
     files_processed = {}
     if os.path.exists(STATE_PATH):
         with open(STATE_PATH, "r") as t:
@@ -240,7 +243,11 @@ def run(
     def process_func_wrapper(example): return process_example(example, tokenizer, eot)
 
     # ------- GLOBAL HASH REGISTRY (Disk-backed) ----------------------------
-    registry = HashRegistry(db_path=registry_cache, map_size_gb=200)  # enlarge map_size if needed
+    try:
+        registry = HashRegistry(db_path=registry_cache, map_size_gb=map_size_gb)
+    except Exception as e:
+        LOG.error("LMDB open failed: %s", e)
+        raise
 
     # ------- Main loop -----------------------------------------------------
     for dataset_name in datasets_list:
