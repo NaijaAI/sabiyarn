@@ -34,7 +34,7 @@ app = modal.App("sabiyarn-training")
 volume = modal.Volume.from_name("sabiyarn-data", create_if_missing=True)
 
 @app.function(
-    gpu="A100-40GB",  
+    gpu="A10",  
     timeout=86400,  # 24 hours
     image=image,
     volumes={"/data": volume},
@@ -112,7 +112,7 @@ def train_sabiyarn(volume: modal.Volume):
         optimizer_type=conf['training']['optimizer_type'],
         
         # Data paths (Modal persistent volume)
-        dataset=conf['data']['dataset'],
+        dataset=conf['data']['datasets'],
         train_data_path=conf['data']['train_data_path'],
         eval_data_path=conf['data']['eval_data_path'],
         out_dir=conf['data']['out_dir'],
