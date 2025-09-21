@@ -78,8 +78,13 @@ def train_sabiyarn(volume: modal.Volume, rehash=False):
         else:
             print(f"[INFO] No existing dedup hash folder found at: {hash_dir}")
             
+    
     with open(CONFIG_PATH, "r") as f:
         conf = yaml.safe_load(f)
+        
+    if rehash:
+        clear_dedup_hash_folder(conf['hash']['registry_cache'], rehash=rehash)
+        
     # Create configuration
     config = TrainingConfig(
         # Model Architecture
@@ -164,6 +169,7 @@ def train_sabiyarn(volume: modal.Volume, rehash=False):
         hash_algo= conf['hash']['hash_algo'],
         registry_cache= conf['hash']['registry_cache'],
         map_size_gb= conf['hash']['map_size_gb'],
+        overwrite_data= conf['data']['overwrite_data'], ## overwrite train.bin and val.bin if they exist
     )
     
     print("Starting SabiYarn training on Modal GPU...")

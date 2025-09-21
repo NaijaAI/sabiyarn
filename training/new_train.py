@@ -223,6 +223,9 @@ class TrainingConfig:
     registry_cache: str = "global_hash_registry.lmdb",
     map_size_gb: int = 50,
     
+    # Overwrite train.bin and val.bin if they exist
+    overwrite_data: bool = True
+    
     ## The below parameter should be used for only testing
     hf_repo_files = {
         "Aletheia-ng/pretrain_test": [
@@ -687,6 +690,12 @@ class SabiYarnTrainer:
             os.environ["TRAIN_DATA_PATH"] = self.config.train_data_path
             os.environ["VAL_DATA_PATH"] = self.config.eval_data_path
             # Persist processed-files ledger on the same volume as the bins (default)
+            if self.config.overwrite_data:
+                if os.path.exists(self.config.train_data_path):
+                    os.remove(self.config.train_data_path)
+                if os.path.exists(self.config.eval_data_path):
+                    os.remove(self.config.eval_data_path)
+                    
             state_dir = os.path.dirname(self.config.train_data_path)
             os.environ.setdefault("PREP_STATE_PATH", os.path.join(state_dir, "data_struct.json"))
         except Exception:
