@@ -109,8 +109,17 @@ def process_example(example, tokenizer, eot_token):
     ids.extend([eot_token, eot_token])
     return {"ids": ids, "len": len(ids)}
 
-def write_to_memmap(dset, filename, dtype, log_prefix=""):
-    """Writes a dataset split to a memory-mapped file."""
+def write_to_memmap(dset, filename, dtype, log_prefix="",):
+    """
+    Writes a dataset split to a memory-mapped file.
+    """
+    dtype = np.uint16
+    
+    # Add a length column if it doesn't exist
+    LOG.info(f'column names: {dset.column_names}')
+    # if "len" not in dset.column_names:
+    dset = dset.map(lambda x: {"len": len(x["ids"])})
+        
     arr_len = np.sum(dset["len"], dtype=np.uint64)
 
     # Check if file exists to determine starting index for appending
@@ -272,9 +281,14 @@ def run(
             if n_samples != -1:
                 ds = ds.select(range(min(n_samples, len(ds))))
 
-            # 1️⃣ GLOBAL DEDUP
+            
+            LOG.info(f"Dataset summary: {ds}…")
+            # 1 GLOBAL DEDUP
             LOG.info(f"Deduplicating {dataset_name}…")
             ds = dedup_dataset_streaming(ds, "text", registry, hash_algo)
+            if len(ds) == 0:
+                LOG.warning(f"All samples in dataset '{dataset_name}' were duplicates. Skipping...")
+                continue
 
             # Split, tokenize, save
             test_size = calculate_test_size(len(ds))
@@ -291,6 +305,8 @@ def run(
 
             for split, d in tokenized.items():
                 out_file = TRAIN_BIN_PATH if split == "train" else VAL_BIN_PATH
+                LOG.info(f"Writing {split} with {d} to {out_file} …")
+                
                 write_to_memmap(d, out_file, np.uint16, log_prefix=f"[{dataset_name} - {split}]")
 
             all_files = list_repo_files(dataset_name, repo_type="dataset", token=READ_TOKEN)
@@ -309,9 +325,14 @@ def run(
                                             token=READ_TOKEN)
                 dset = load_dataset("parquet", data_files={"train": local_path})["train"]
 
+                LOG.info(f"Dataset summary: {dset}…")
+
                 # 1️⃣ GLOBAL DEDUP for this shard
                 dset = dedup_dataset_streaming(dset, "text", registry, hash_algo)
-
+                
+                if len(dset) == 0:
+                    LOG.warning(f"All samples in file '{fpath}' were duplicates. Skipping...")
+                    continue
                 test_size = calculate_test_size(len(dset))
                 if len(dset) < 50 or test_size == 0:
                     split_d = {"train": dset, "val": dset}
@@ -327,6 +348,7 @@ def run(
 
                 for split, d in tokenized.items():
                     out_file = TRAIN_BIN_PATH if split == "train" else VAL_BIN_PATH
+                    LOG.info(f"Writing {split} with {d} to {out_file} …")
                     write_to_memmap(d, out_file, np.uint16, log_prefix=f"[{dataset_name}:{fpath}-{split}]")
 
                 current_dataset_processed.append(fpath)
