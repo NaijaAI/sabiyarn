@@ -21,9 +21,12 @@ import hashlib
 import json
 from pathlib import Path
 import hashlib, lmdb
-
+# remove cache for a specific dataset
+# from datasets import set_caching_enabled
 
 load_dotenv()
+
+# set_caching_enabled(False)
 LOG = structlog.stdlib.get_logger()
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
@@ -264,6 +267,7 @@ def run(
 
         if not PROCESS_ONE_FILE_AT_A_TIME:
             LOG.info(f"Loading dataset '{dataset_name}'…")
+            LOG.info(f"Datafiles: {data_files.get(dataset_name)}")
             load_kwargs = dict(
                 num_proc=num_proc_load_dataset,
                 trust_remote_code=True,
@@ -274,7 +278,7 @@ def run(
                 load_kwargs["revision"] = DATASET_REVISION
 
             ds = load_dataset(dataset_name,
-                              data_files=data_files.get(dataset_name),
+                              data_files=data_files.get(dataset_name),download_mode="force_redownload",
                               **load_kwargs)["train"]
 
             ds = ds.shuffle(seed=seed)
@@ -314,7 +318,7 @@ def run(
 
         else:
             # ---------- One-file-at-a-time branch ----------
-            all_files = list_repo_files(dataset_name, repo_type="dataset", token=READ_TOKEN)
+            all_files = data_files.get(dataset_name) or list_repo_files(dataset_name, repo_type="dataset", token=READ_TOKEN)
             files_to_process = [f for f in all_files if f not in current_dataset_processed and f.endswith(".parquet")]
 
             for fpath in files_to_process:
@@ -322,8 +326,10 @@ def run(
                 local_path = hf_hub_download(dataset_name, filename=fpath,
                                             repo_type="dataset",
                                             revision=DATASET_REVISION or "main",
-                                            token=READ_TOKEN)
+                                            token=READ_TOKEN,
+                                            force_download=True, )
                 dset = load_dataset("parquet", data_files={"train": local_path})["train"]
+                LOG.info(f"Datafiles: {data_files.get(dataset_name)}")
 
                 LOG.info(f"Dataset summary: {dset}…")
 

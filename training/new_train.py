@@ -15,6 +15,8 @@ from datetime import datetime
 import json
 import random
 import string
+import modal
+
 project_root = os.path.join(os.path.dirname(__file__), '..')
 sys.path.insert(0, project_root)
 
@@ -304,7 +306,7 @@ class TrainingConfig:
 # set seed
 
 class SabiYarnTrainer:   
-    def __init__(self, config: TrainingConfig):
+    def __init__(self, config: TrainingConfig, volume: modal.Volume = None):
         self.local_iter_num = 0
         self.running_mfu = -1.0
         self.step_start_time = time.time()
@@ -312,6 +314,7 @@ class SabiYarnTrainer:
         self.iterate_from_start = True
         self.config = config
         self.lr_manually_reduced= False
+        self.volume = volume
         
         self.setup_environment()
         self.setup_distributed()
@@ -689,6 +692,9 @@ class SabiYarnTrainer:
         try:
             os.environ["TRAIN_DATA_PATH"] = self.config.train_data_path
             os.environ["VAL_DATA_PATH"] = self.config.eval_data_path
+            LOG.info(f"Train data path: {self.config.train_data_path}")
+            LOG.info(f"Eval data path: {self.config.eval_data_path}")
+            LOG.info(f"Overwrite existing data: {self.config.overwrite_data}")
             # Persist processed-files ledger on the same volume as the bins (default)
             if self.config.overwrite_data:
                 if os.path.exists(self.config.train_data_path):
@@ -707,6 +713,8 @@ class SabiYarnTrainer:
                 return os.path.exists(path) and os.path.getsize(path) > 0
             except Exception:
                 return False
+            
+        LOG.info(f"Checking for existing data bins...{_is_nonempty(self.config.train_data_path) and _is_nonempty(self.config.eval_data_path) and not self.config.overwrite_data}")
 
         if _is_nonempty(self.config.train_data_path) and _is_nonempty(self.config.eval_data_path) and not self.config.overwrite_data: # os.getenv("FORCE_PREP", "0") != "1":
             try:
@@ -719,6 +727,8 @@ class SabiYarnTrainer:
         else:
             prepare.run([self.config.dataset], self.config.hf_repo_files, os.cpu_count(), self.config.n_samples, self.config.seed,
                         self.config.hash_algo, self.config.registry_cache, self.config.map_size_gb)
+            if self.volume:
+                self.volume.commit()
         
         # Initialize tokenizer if available
         self.tokenizer = None
@@ -1376,6 +1386,7 @@ class SabiYarnTrainer:
                     if self.iter_num > 0:
                         # self.save_checkpoint()
                         self.save_checkpoint_wandb()
+                        self.volume.commit()
                         
             if self.iter_num == 0 and self.config.eval_only:
                 break

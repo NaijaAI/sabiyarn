@@ -42,7 +42,7 @@ volume = modal.Volume.from_name("sabiyarn-data", create_if_missing=True)
     cpu=8,
     # memory=32768,  # 32GB RAM
 )
-def train_sabiyarn(volume: modal.Volume, rehash=False):
+def train_sabiyarn(volume: modal.Volume,):
     """
     Train SabiYarn model on Modal GPU with comprehensive monitoring.
     
@@ -64,7 +64,7 @@ def train_sabiyarn(volume: modal.Volume, rehash=False):
     CONFIG_PATH = "/app/training/train_config.yaml"
 
 
-    def clear_dedup_hash_folder(hash_dir: str):
+    def clear_dedup_hash_folder(hash_dir: str, rehash: bool):
         """
         Delete the folder that stores the dedup hash registry
         to force a fresh deduplication run.
@@ -82,8 +82,8 @@ def train_sabiyarn(volume: modal.Volume, rehash=False):
     with open(CONFIG_PATH, "r") as f:
         conf = yaml.safe_load(f)
         
-    if rehash:
-        clear_dedup_hash_folder(conf['hash']['registry_cache'], rehash=conf["data"]["rehash"])
+    
+    clear_dedup_hash_folder(conf['hash']['registry_cache'], rehash=conf["data"]["rehash"])
         
     # Create configuration
     config = TrainingConfig(
@@ -175,7 +175,7 @@ def train_sabiyarn(volume: modal.Volume, rehash=False):
     print("Starting SabiYarn training on Modal GPU...")
     
     # Initialize and run trainer
-    trainer = SabiYarnTrainer(config)
+    trainer = SabiYarnTrainer(config, volume)
     
     try:
         trainer.train()
@@ -194,7 +194,7 @@ def main():
     # print("📁 Preparing data...")
     # prepare_data.remote()
 
-    result = train_sabiyarn.remote(volume, rehash=False)
+    result = train_sabiyarn.remote(volume)
     
     if result:
         print("🎉 Training completed successfully!")
