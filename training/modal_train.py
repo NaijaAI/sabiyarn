@@ -64,7 +64,7 @@ def train_sabiyarn(volume: modal.Volume, rehash=False):
     CONFIG_PATH = "/app/training/train_config.yaml"
 
 
-    def clear_dedup_hash_folder(hash_dir: str, rehash=rehash):
+    def clear_dedup_hash_folder(hash_dir: str):
         """
         Delete the folder that stores the dedup hash registry
         to force a fresh deduplication run.
@@ -83,7 +83,7 @@ def train_sabiyarn(volume: modal.Volume, rehash=False):
         conf = yaml.safe_load(f)
         
     if rehash:
-        clear_dedup_hash_folder(conf['hash']['registry_cache'], rehash=rehash)
+        clear_dedup_hash_folder(conf['hash']['registry_cache'], rehash=conf["data"]["rehash"])
         
     # Create configuration
     config = TrainingConfig(
@@ -194,7 +194,7 @@ def main():
     # print("📁 Preparing data...")
     # prepare_data.remote()
 
-    result = train_sabiyarn.remote(volume, rehash=True)
+    result = train_sabiyarn.remote(volume, rehash=False)
     
     if result:
         print("🎉 Training completed successfully!")

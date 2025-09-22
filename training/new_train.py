@@ -224,7 +224,7 @@ class TrainingConfig:
     map_size_gb: int = 50,
     
     # Overwrite train.bin and val.bin if they exist
-    overwrite_data: bool = True
+    overwrite_data: bool = False
     
     ## The below parameter should be used for only testing
     hf_repo_files = {
@@ -708,7 +708,7 @@ class SabiYarnTrainer:
             except Exception:
                 return False
 
-        if _is_nonempty(self.config.train_data_path) and _is_nonempty(self.config.eval_data_path) and os.getenv("FORCE_PREP", "0") != "1":
+        if _is_nonempty(self.config.train_data_path) and _is_nonempty(self.config.eval_data_path) and not self.config.overwrite_data: # os.getenv("FORCE_PREP", "0") != "1":
             try:
                 import numpy as np
                 tr = np.memmap(self.config.train_data_path, dtype=np.uint16, mode="r")

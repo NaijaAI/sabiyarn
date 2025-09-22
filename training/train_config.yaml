@@ -57,6 +57,7 @@ data:
   eval_data_path : "data/val.bin"
   out_dir: "data/checkpoints"
   overwrite_data: false
+  rehash: false
 
 # model
 model:
