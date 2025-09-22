@@ -53,8 +53,8 @@ wandb:
 # data
 data: 
   datasets: "Aletheia-ng/pretrain_test"
-  train_data_path : "data/train.bin"
-  eval_data_path : "data/val.bin"
+  train_data_path : "/data/train.bin"
+  eval_data_path : "/data/val.bin"
   out_dir: "data/checkpoints"
   overwrite_data: false
   rehash: false
