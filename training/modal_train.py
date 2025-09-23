@@ -139,7 +139,7 @@ def train_sabiyarn(volume: modal.Volume,):
         out_dir=conf['data']['out_dir'],
         eval_interval=conf['wandb']['eval_interval'],
         log_interval=conf['wandb']['log_interval'],
-        run_dir=conf['wandb']['run_dir'],
+        # run_dir=conf['wandb']['run_dir'],
         
         # W&B Configuration
         wandb_log=conf["wandb"]["log"],
@@ -170,6 +170,7 @@ def train_sabiyarn(volume: modal.Volume,):
         registry_cache= conf['hash']['registry_cache'],
         map_size_gb= conf['hash']['map_size_gb'],
         overwrite_data= conf['data']['overwrite_data'], ## overwrite train.bin and val.bin if they exist
+        use_custom_causal_mask=conf['training']['use_custom_causal_mask'],
     )
     
     print("Starting SabiYarn training on Modal GPU...")

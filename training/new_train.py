@@ -314,7 +314,7 @@ class SabiYarnTrainer:
         self.local_iter_num = 0
         self.running_mfu = -1.0
         self.step_start_time = time.time()
-        self.iter_training_limit = 3000
+        self.iter_training_limit = 4000
         self.iterate_from_start = True
         self.config = config
         self.lr_manually_reduced= False
@@ -978,7 +978,6 @@ class SabiYarnTrainer:
         # Create standard causal mask
         mask = torch.tril(torch.ones(seq_len, seq_len, device=tokens.device))
         mask = mask.view(1, 1, seq_len, seq_len).repeat(batch_size, 1, 1, 1)
-        
         # Apply custom causal masking if enabled
         if self.config.use_custom_causal_mask:
             mask = create_causal_mask_optimized(
@@ -986,7 +985,8 @@ class SabiYarnTrainer:
                 mask, 
                 id_val=self.config.mask_id_value
             )
-            
+        # print("mask shape: ", mask.shape)
+        
         return mask
         
     def compute_loss(self, tokens: torch.Tensor, targets: torch.Tensor):
@@ -1159,6 +1159,8 @@ class SabiYarnTrainer:
         ckpt_latest = os.path.join(self.run_dir, "ckpt.pt")
         ckpt_iter = os.path.join(self.run_dir, f"ckpt_{self.iter_num:07d}.pt")
         torch.save(checkpoint, ckpt_latest)
+        self.volume.commit()
+        LOG.info(f"Checkpoint saved to {ckpt_latest}")
         # torch.save(checkpoint, ckpt_iter)
 
         try:
@@ -1250,7 +1252,7 @@ class SabiYarnTrainer:
                 attn = self.config.attention_type
                 moe_tag = "moe" if self.config.use_moe else "dense"
                 suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-                dir_name = f"{timestamp}_{attn}_{self.config.dim}d_{self.config.n_layers}L_{self.config.n_heads}H_{moe_tag}_{suffix}"
+                dir_name = f"{timestamp}_{attn}_{self.config.dim}d_{self.config.n_layers}L_{self.config.layer_sharing_strategy}_{self.config.n_heads}H_{moe_tag}_{suffix}"
                 self.run_dir = os.path.join(self.config.out_dir, dir_name)
             os.makedirs(self.run_dir, exist_ok=True)
             # Write metadata for this run
