@@ -43,6 +43,7 @@ training:
 wandb: 
   log : true  # disabled by default
   project : sabiyarn-ablations
+  wandb_entity: "damilojohn"
   wandb_run_name : mla_moe_cce  # 'run' + str(time.time())
   save_model_to_wandb: true
   eval_interval: 2000
@@ -99,7 +100,7 @@ model:
   num_prediction_tokens: 2
   mtp_only_training: True
 
-  attention_type : "MLA"
+  attention_type : "GQA"
   logic_network : False
   max_seq_len : 1024
   use_j : True

@@ -145,7 +145,7 @@ def train_sabiyarn(volume: modal.Volume,):
         wandb_log=conf["wandb"]["log"],
         wandb_project=conf['wandb']['project'],
         wandb_run_name=conf['wandb']['wandb_run_name'],
-        wandb_tags=["Modal", "GPU", conf['model']['attention_type'], "SabiYarn"],
+        wandb_tags=["Modal", "GPU", conf['model']['attention_type'],"SabiYarn"],
         
         # Enhanced monitoring for Modal
         log_grad_norm=conf['training']['log_grad_norm'],

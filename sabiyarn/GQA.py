@@ -8,15 +8,17 @@ from typing import Optional
 from dataclasses import dataclass
 from .utils import apply_rotary_emb, repeat_kv
 
+
 @dataclass
 class GQAArgs:
     dim: int = 2048
-    n_kv_heads: int = 8 #n_kv_heads can be less than n_heads
+    n_kv_heads: int = 8 # n_kv_heads can be less than n_heads
     n_heads: int = 16 # number of query heads
     max_seq_len: int = 2048
     max_batch_size: int = 32
     use_kv_cache: bool = True
     dropout: float = 0.1
+
 
 class GroupedQueryAttention(nn.Module):
     def __init__(self, args: GQAArgs):

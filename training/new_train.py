@@ -189,10 +189,10 @@ class TrainingConfig:
     
     # WandB logging
     wandb_log: bool = True
-    wandb_entity: str = "nanayeb34-sabiyarn"
+    wandb_entity: str = "damilojohn"
     wandb_project: str = "sabiyarn-new-training"
     wandb_run_name: str = "modern_training"
-    wandb_tags: list = field(default_factory=lambda: ["MLA", "MoE", "MTP", "SabiYarn"])
+    wandb_tags: list = field(default_factory=lambda: ["GQA", "CCE", "MoE", "SabiYarn"])
     save_model_to_wandb: bool = False
     
     # Advanced monitoring
