@@ -36,6 +36,8 @@ import structlog
 import torch
 import torch.nn.functional as F
 import torch.distributed as dist
+from torch.utils.data import DataLoader, Dataset
+from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import SGD, Adam, AdamW
 import numpy as np
@@ -86,8 +88,6 @@ def clear_cuda():
     else:
         print("⚠️ CUDA is not available on this device")
 
-
-# Example usage
 clear_cuda()
 
 
@@ -96,22 +96,24 @@ class TrainingConfig:
     # Model Architecture
     attention_type: AttentionType = (
         AttentionType.GQA
-    )  # "self_attention" , "differential_attention", "MLA"
+    )
     dim: int = 768
     n_layers: int = 20
     n_heads: int = 8
     n_kv_heads: Optional[int] = 4
     vocab_size: int = 64000
     max_seq_len: int = 1024
-    max_batch_size: int = 8  # 8
-    train_batch_size: int = 8  # 8
+    max_batch_size: int = 8
+    train_batch_size: int = 8
     bias: bool = True
     dropout: float = 0.1
     use_kv_cache: bool = False
+
     # Attention-specific configs
     use_mla: bool = False
     use_differential_attention: bool = False
     use_kv_cache = True
+
     # MLA Configuration
     mla_q_lora_rank: int = 512
     mla_kv_lora_rank: int = 256
@@ -132,14 +134,14 @@ class TrainingConfig:
     n_shared_experts: int = 2
     score_function: str = "sigmoid"
     bias_update_speed: float = 0.001
-    moe_aux_loss_weight: float = 0.001  # Weight for MoE sequence-wise auxiliary loss
+    moe_aux_loss_weight: float = 0.001 
 
     # Multi-Token Prediction (only with MLA)
     use_multi_token_prediction: bool = False
     num_prediction_tokens: int = 2
     mtp_loss_weight: float = 1.0
     mtp_share_embeddings: bool = True
-    mtp_only_training: bool = True  # When True, only use MTP loss for training
+    mtp_only_training: bool = True
 
     # Layer Sharing (MobileLLM-style)
     layer_sharing_strategy: str = "immediate"
@@ -156,7 +158,7 @@ class TrainingConfig:
 
     # Training Configuration
 
-    gradient_accumulation_steps: int = 20  # 5 * 8
+    gradient_accumulation_steps: int = 20
     learning_rate: float = 3e-4
     max_iters: int = 50000
     weight_decay: float = 1e-1
@@ -179,26 +181,25 @@ class TrainingConfig:
     # Custom masking
     use_custom_causal_mask: bool = True
     mask_id_value: int = (
-        1  # ID value for custom masking, this is for the end of text token id value from our tokenizer which is 1 for llama
-    )
+        1 )
 
     # Data
-    dataset: str = "Aletheia-ng/pretrain_test"  # "semran1/finewebedu-dedup-600k"
+    dataset: str = "Aletheia-ng/pretrain_test"
     train_data_path: str = "./training.bin"
     eval_data_path: str = "./validation.bin"
 
     # Logging and checkpointing
-    out_dir: str = "out"  # Base directory that will contain per-run subfolders
+    out_dir: str = "out" 
     run_dir: Optional[str] = (
-        None  # Full path to the current run directory (auto-created if None)
+        None
     )
-    resume_run_dir: Optional[str] = None  # When resuming, explicitly set the run folder
+    resume_run_dir: Optional[str] = None
     eval_interval: int = 64
     log_interval: int = 16
     eval_iters: int = 100
     eval_only: bool = False
     always_save_checkpoint: bool = False
-    init_from: str = "scratch"  # "scratch" or "resume"
+    init_from: str = "scratch"
 
     # WandB logging
     wandb_log: bool = True
@@ -210,11 +211,11 @@ class TrainingConfig:
 
     # Advanced monitoring
     log_grad_norm: bool = True
-    log_weights: bool = True  # Log weight distributions
+    log_weights: bool = True
     log_system_metrics: bool = True
-    log_moe_metrics: bool = True  # Log MoE expert utilization
-    log_attention_metrics: bool = True  # Log attention statistics
-    monitor_interval: int = 50  # Log detailed metrics every N steps
+    log_moe_metrics: bool = True
+    log_attention_metrics: bool = True
+    monitor_interval: int = 50
 
     # Generation testing
     display_model_output_iter: int = 32
@@ -347,11 +348,9 @@ class SabiYarnTrainer:
         self.setup_optimizer()
         self.setup_compilation()
         self.setup_distributed()
+        if self.dist:
+            self.distributed_dataloader = self.setup_distributed_dataloader()
 
-        # torch.seed(config.seed)
-        # Training state
-        # Only initialize defaults when starting from scratch.
-        # When resuming, these are loaded inside setup_model().
         if self.config.init_from != "resume":
             self.iter_num = 0
             self.best_val_loss = 1e9
@@ -1029,10 +1028,79 @@ class SabiYarnTrainer:
             LOG.info("Compiling model...")
             self.unoptimized_model = self.model
             self.model = torch.compile(self.model)
+    
+    def setup_dataloader(self):
+        class TokenDataset(Dataset):
+            def __init__(self, config: TrainingConfig,
+                         split="train"):
+                
+                self.data_path = config.train_data_path if split == "train" else config.val_data_path
+                self.max_seq_len = config.max_seq_len
+                self.split = split
+                self.data = np.memmap(self.data_path, dtype=np.uint16, mode="r")
+                self.token_count = len(self.data)
 
-        # # Wrap in DDP if needed
-        # if self.ddp:
-        #     self.model = DDP(self.model, device_ids=[self.local_rank])
+            def __getitem__(self, idx):
+                X = torch.from_numpy((self.data[idx : idx + self.max_seq_len]).astype(
+                            np.int64))
+
+                Y = torch.from_numpy((self.data[idx + 1 : idx + 1 + self.max_seq_len]).astype(np.int64))
+
+                return X, Y
+
+            def __len__(self):
+                return self.token_count
+            
+        train_dataset = TokenDataset(
+            config = config,
+            split="train"
+        )
+        
+        train_sampler = DistributedSampler(
+            train_dataset,
+            num_replicas=self.config.world_size,
+            rank=dist.get_rank(),
+            shuffle=True,
+            seed=self.seed_offset,
+            drop_last=True
+        )
+
+        self.train_loader = DataLoader(
+            train_dataset,
+            batch_size=self.config.train_batch_size,
+            sampler=train_sampler,
+            num_workers=4,
+            pin_memory=True,
+            drop_last=True
+        )
+        val_dataset = TokenDataset(
+            config,
+            split='val'
+        )
+        
+        val_sampler = DistributedSampler(
+            val_dataset,
+            num_replicas=self.config.world_size,
+            rank=dist.get_rank(),
+            shuffle=False,
+            drop_last=False
+        )
+        
+        self.val_loader = DataLoader(
+            val_dataset,
+            batch_size=self.config.train_batch_size,
+            sampler=val_sampler,
+            num_workers=4,
+            pin_memory=True
+        )
+
+        if self.master_process:
+            LOG.info(f"Dataset size: {len(train_dataset)}")
+            LOG.info(f"Samples per rank: {len(train_sampler)}")
+
+        self.train_iter = iter(self.train_loader)
+        self.val_iter = iter(self.val_loader)
+
 
     def get_batch(self, split: str):
         """Load a batch of data."""
@@ -1041,40 +1109,48 @@ class SabiYarnTrainer:
             if split == "train"
             else self.config.eval_data_path
         )
-        data = np.memmap(data_path, dtype=np.uint16, mode="r")
+        if self.config.dist:
+            if split == "train":
+                x, y = next(self.train_iter)
+            else:
+                x, y = next(self.val_iter)
+        else:
+            data = np.memmap(data_path, dtype=np.uint16, mode="r")
 
-        ix = torch.randint(
-            len(data) - self.config.max_seq_len, (self.config.train_batch_size,)
-        )
-        x = [
-            torch.from_numpy((data[i : i + self.config.max_seq_len]).astype(np.int64))
-            for i in ix
-        ]
-        y = [
-            torch.from_numpy(
-                (data[i + 1 : i + 1 + self.config.max_seq_len]).astype(np.int64)
+            ix = torch.randint(
+                len(data) - self.config.max_seq_len, (self.config.train_batch_size,)
             )
-            for i in ix
-        ]
+            x = [
+                torch.from_numpy((data[i : i + self.config.max_seq_len]).astype(
+                    np.int64))
+                for i in ix
+            ]
+            y = [
+                torch.from_numpy(
+                    (data[i + 1 : i + 1 + self.config.max_seq_len]).astype(
+                        np.int64)
+                )
+                for i in ix
+            ]
 
-        # Apply label processing
-        y = [process_labels_optimized(sample.clone(), MASK) for sample in y]
+            # Apply label processing
+            y = [process_labels_optimized(sample.clone(), MASK) for sample in y]
 
-        x = torch.stack(x)
-        y = torch.stack(y)
+            x = torch.stack(x)
+            y = torch.stack(y)
 
-        # Debug: Check for invalid tokens in raw data
-        if x.max() >= self.config.vocab_size:
-            LOG.error(
-                f"Invalid input tokens in batch! Max: {x.max()}, vocab_size: {self.config.vocab_size}"
-            )
-            LOG.error(f"Invalid x values: {x[x >= self.config.vocab_size]}")
+            # Debug: Check for invalid tokens in raw data
+            if x.max() >= self.config.vocab_size:
+                LOG.error(
+                    f"Invalid input tokens in batch! Max: {x.max()}, vocab_size: {self.config.vocab_size}"
+                )
+                LOG.error(f"Invalid x values: {x[x >= self.config.vocab_size]}")
 
-        if y.max() >= self.config.vocab_size:
-            LOG.error(
-                f"Invalid target tokens in batch! Max: {y.max()}, vocab_size: {self.config.vocab_size}"
-            )
-            LOG.error(f"Invalid y values: {y[y >= self.config.vocab_size]}")
+            if y.max() >= self.config.vocab_size:
+                LOG.error(
+                    f"Invalid target tokens in batch! Max: {y.max()}, vocab_size: {self.config.vocab_size}"
+                )
+                LOG.error(f"Invalid y values: {y[y >= self.config.vocab_size]}")
 
         if self.device_type == "cuda":
             x = x.pin_memory().to(self.config.device, non_blocking=True)
