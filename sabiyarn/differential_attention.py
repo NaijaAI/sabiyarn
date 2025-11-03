@@ -276,10 +276,11 @@ class DiffAttention(nn.Module):
         if mask is None:
             # Create proper causal mask with -inf for future positions
             mask = torch.triu(
-                torch.ones((tgt_len, tgt_len), device=attn_scores.device) * float('-inf'),
+                torch.ones((tgt_len, tgt_len), device=attn_scores.device)
+                * float("-inf"),
                 diagonal=1 + offset,
             )
-        
+
         attn_scores = torch.nan_to_num(attn_scores)
         attn_scores = attn_scores + mask
         attn_weights = F.softmax(attn_scores, dim=-1, dtype=torch.float32).type_as(

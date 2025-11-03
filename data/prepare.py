@@ -21,6 +21,7 @@ import hashlib
 import json
 from pathlib import Path
 import hashlib, lmdb
+
 # remove cache for a specific dataset
 # from datasets import set_caching_enabled
 
@@ -32,14 +33,16 @@ LOG = structlog.stdlib.get_logger()
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root =  os.path.dirname(current_dir)
+project_root = os.path.dirname(current_dir)
 
 config_path = "/app/training/train_config.yaml"
 config = OmegaConf.load(config_path)
 
 READ_TOKEN = os.getenv("HF_API_KEY")
 num_proc = min(config.model.tokenizer.num_proc, os.cpu_count())
-DATASET_REVISION = os.getenv("HF_DATASET_REVISION")  # Optional pin to commit/tag for stable cache keys
+DATASET_REVISION = os.getenv(
+    "HF_DATASET_REVISION"
+)  # Optional pin to commit/tag for stable cache keys
 
 # number of workers in load_dataset() call
 # best number might be different from num_proc above as it also depends on NW speed.
@@ -47,21 +50,25 @@ DATASET_REVISION = os.getenv("HF_DATASET_REVISION")  # Optional pin to commit/ta
 
 DATASETS = config.data.datasets
 
-PROCESS_ONE_FILE_AT_A_TIME = config.model.tokenizer.process_one_file_at_a_time #Should be True
+PROCESS_ONE_FILE_AT_A_TIME = (
+    config.model.tokenizer.process_one_file_at_a_time
+)  # Should be True
+
 
 class HashRegistry:
     """Disk-backed hash registry using LMDB for billions of items."""
+
     def __init__(self, db_path: str, map_size_gb: int = 50):
         # map_size ~ maximum DB size. 50GB default; increase if needed.
         self.env = lmdb.open(
             db_path,
-            map_size=map_size_gb * 1024 ** 3,
+            map_size=map_size_gb * 1024**3,
             subdir=True,
             max_dbs=1,
             readonly=False,
             lock=True,
             readahead=False,
-            meminit=False
+            meminit=False,
         )
 
     def add_if_new(self, h: bytes) -> bool:
@@ -76,7 +83,9 @@ class HashRegistry:
         self.env.close()
 
 
-def dedup_dataset_streaming(dataset, text_column, registry: HashRegistry, hash_algo="md5"):
+def dedup_dataset_streaming(
+    dataset, text_column, registry: HashRegistry, hash_algo="md5"
+):
     """Return only new rows by consulting the global registry."""
     hasher = getattr(hashlib, hash_algo)
     keep_idx = []
@@ -86,15 +95,21 @@ def dedup_dataset_streaming(dataset, text_column, registry: HashRegistry, hash_a
             keep_idx.append(idx)
     return dataset.select(keep_idx)
 
+
 def get_tokenizer_and_eot(tokenizer_name):
     """Initializes and returns the tokenizer and end_of_text_token."""
     enc = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
-    eot_token = enc.eos_token_id if enc.eos_token_id is not None else constant_tokens.end_of_text_token
+    eot_token = (
+        enc.eos_token_id
+        if enc.eos_token_id is not None
+        else constant_tokens.end_of_text_token
+    )
     return enc, eot_token
+
 
 def calculate_test_size(dataset_length):
     """Calculates the test split size based on dataset length."""
-    if dataset_length <= 50: # Handle very small datasets, no test split
+    if dataset_length <= 50:  # Handle very small datasets, no test split
         return 0
     elif dataset_length <= 80000:
         return int(0.1 * dataset_length)
@@ -102,8 +117,9 @@ def calculate_test_size(dataset_length):
         return int(0.01 * dataset_length)
     elif dataset_length <= 3500000:
         return int(0.0025 * dataset_length)
-    else: # dataset_length > 3500000
+    else:  # dataset_length > 3500000
         return int(0.0005 * dataset_length)
+
 
 def process_example(example, tokenizer, eot_token):
     """Tokenizes a single example and adds end_of_text tokens."""
@@ -112,17 +128,23 @@ def process_example(example, tokenizer, eot_token):
     ids.extend([eot_token, eot_token])
     return {"ids": ids, "len": len(ids)}
 
-def write_to_memmap(dset, filename, dtype, log_prefix="",):
+
+def write_to_memmap(
+    dset,
+    filename,
+    dtype,
+    log_prefix="",
+):
     """
     Writes a dataset split to a memory-mapped file.
     """
     dtype = np.uint16
-    
+
     # Add a length column if it doesn't exist
-    LOG.info(f'column names: {dset.column_names}')
+    LOG.info(f"column names: {dset.column_names}")
     # if "len" not in dset.column_names:
     dset = dset.map(lambda x: {"len": len(x["ids"])})
-        
+
     arr_len = np.sum(dset["len"], dtype=np.uint64)
 
     # Check if file exists to determine starting index for appending
@@ -137,7 +159,7 @@ def write_to_memmap(dset, filename, dtype, log_prefix="",):
     if os.path.exists(filename) and os.path.getsize(filename) > 0:
         existing_arr = np.memmap(filename, dtype=dtype, mode="r")
         initial_idx = len(existing_arr)
-        del existing_arr # Release file handle
+        del existing_arr  # Release file handle
         # Total size will be current size + new data size
         total_arr_len = initial_idx + arr_len
         arr = np.memmap(filename, dtype=dtype, mode="r+", shape=(total_arr_len,))
@@ -145,9 +167,13 @@ def write_to_memmap(dset, filename, dtype, log_prefix="",):
         initial_idx = 0
         arr = np.memmap(filename, dtype=dtype, mode="w+", shape=(arr_len,))
 
-    LOG.info(f"{log_prefix} created/opened bin file (current size: {initial_idx} elements, new data: {arr_len} elements)...")
+    LOG.info(
+        f"{log_prefix} created/opened bin file (current size: {initial_idx} elements, new data: {arr_len} elements)..."
+    )
 
-    n_shards = min(1024, len(dset)) # Use min to avoid n_shards > len(dset) when dset is small
+    n_shards = min(
+        1024, len(dset)
+    )  # Use min to avoid n_shards > len(dset) when dset is small
 
     current_idx = initial_idx
     LOG.info(f"{log_prefix} writing to bin file from index {initial_idx}...")
@@ -162,8 +188,10 @@ def write_to_memmap(dset, filename, dtype, log_prefix="",):
     arr.flush()
     LOG.info(f"{log_prefix} write to bin file complete...")
 
+
 def remove_duplicate_samples(
-    dataset: Dataset, text_column: str = "text", hash_algo: str = "md5") -> Dataset:
+    dataset: Dataset, text_column: str = "text", hash_algo: str = "md5"
+) -> Dataset:
     """
     Stream through a HuggingFace Dataset and drop rows with duplicate text.
 
@@ -193,7 +221,11 @@ def remove_duplicate_samples(
 
 
 def remove_duplicate_samples_across_files(
-    dataset: Dataset, text_column: str, hash_registry: set,  hash_algo: str = "md5",) -> Dataset:
+    dataset: Dataset,
+    text_column: str,
+    hash_registry: set,
+    hash_algo: str = "md5",
+) -> Dataset:
     """
     Deduplicate dataset rows against a global hash_registry.
 
@@ -235,24 +267,30 @@ def run(
     """
     # ------- Setup paths and state -----------------------------------------
     env_train_path = os.getenv("TRAIN_DATA_PATH")
-    env_val_path   = os.getenv("VAL_DATA_PATH")
-    TRAIN_BIN_PATH = env_train_path or getattr(config, "train_data_path", "data/train.bin")
-    VAL_BIN_PATH   = env_val_path   or getattr(config, "eval_data_path",  "data/val.bin")
+    env_val_path = os.getenv("VAL_DATA_PATH")
+    TRAIN_BIN_PATH = env_train_path or getattr(
+        config, "train_data_path", "data/train.bin"
+    )
+    VAL_BIN_PATH = env_val_path or getattr(config, "eval_data_path", "data/val.bin")
     os.makedirs(os.path.dirname(TRAIN_BIN_PATH), exist_ok=True)
-    os.makedirs(os.path.dirname(VAL_BIN_PATH),   exist_ok=True)
+    os.makedirs(os.path.dirname(VAL_BIN_PATH), exist_ok=True)
 
     state_path_env = os.getenv("PREP_STATE_PATH")
-    STATE_PATH = state_path_env or os.path.join(os.path.dirname(TRAIN_BIN_PATH), "data_struct.json")
-    
-    num_proc_load_dataset = min(num_proc_load_dataset, max(1, os.cpu_count()-1))
-    
+    STATE_PATH = state_path_env or os.path.join(
+        os.path.dirname(TRAIN_BIN_PATH), "data_struct.json"
+    )
+
+    num_proc_load_dataset = min(num_proc_load_dataset, max(1, os.cpu_count() - 1))
+
     files_processed = {}
     if os.path.exists(STATE_PATH):
         with open(STATE_PATH, "r") as t:
             files_processed = json.load(t)
 
     tokenizer, eot = get_tokenizer_and_eot(config.model.tokenizer.name)
-    def process_func_wrapper(example): return process_example(example, tokenizer, eot)
+
+    def process_func_wrapper(example):
+        return process_example(example, tokenizer, eot)
 
     # ------- GLOBAL HASH REGISTRY (Disk-backed) ----------------------------
     try:
@@ -277,67 +315,96 @@ def run(
             if DATASET_REVISION:
                 load_kwargs["revision"] = DATASET_REVISION
 
-            ds = load_dataset(dataset_name,
-                              data_files=data_files.get(dataset_name),download_mode="force_redownload",
-                              **load_kwargs)["train"]
+            ds = load_dataset(
+                dataset_name,
+                data_files=data_files.get(dataset_name),
+                download_mode="force_redownload",
+                **load_kwargs,
+            )["train"]
 
             ds = ds.shuffle(seed=seed)
             if n_samples != -1:
                 ds = ds.select(range(min(n_samples, len(ds))))
 
-            
             LOG.info(f"Dataset summary: {ds}…")
             # 1 GLOBAL DEDUP
             LOG.info(f"Deduplicating {dataset_name}…")
             ds = dedup_dataset_streaming(ds, "text", registry, hash_algo)
             if len(ds) == 0:
-                LOG.warning(f"All samples in dataset '{dataset_name}' were duplicates. Skipping...")
+                LOG.warning(
+                    f"All samples in dataset '{dataset_name}' were duplicates. Skipping..."
+                )
                 continue
 
             # Split, tokenize, save
             test_size = calculate_test_size(len(ds))
-            split_ds = ds if test_size == 0 else ds.train_test_split(test_size=test_size, seed=2357)
+            split_ds = (
+                ds
+                if test_size == 0
+                else ds.train_test_split(test_size=test_size, seed=2357)
+            )
             if test_size != 0:
                 split_ds["val"] = split_ds.pop("test")
             else:
                 split_ds = {"train": ds, "val": ds}
 
-            tokenized = split_ds.map(process_func_wrapper,
-                                     remove_columns=["text"],
-                                     desc=f"tokenizing {dataset_name}",
-                                     num_proc=num_proc)
+            tokenized = split_ds.map(
+                process_func_wrapper,
+                remove_columns=["text"],
+                desc=f"tokenizing {dataset_name}",
+                num_proc=num_proc,
+            )
 
             for split, d in tokenized.items():
                 out_file = TRAIN_BIN_PATH if split == "train" else VAL_BIN_PATH
                 LOG.info(f"Writing {split} with {d} to {out_file} …")
-                
-                write_to_memmap(d, out_file, np.uint16, log_prefix=f"[{dataset_name} - {split}]")
 
-            all_files = list_repo_files(dataset_name, repo_type="dataset", token=READ_TOKEN)
-            files_processed[dataset_name] = list(set(current_dataset_processed + all_files))
+                write_to_memmap(
+                    d, out_file, np.uint16, log_prefix=f"[{dataset_name} - {split}]"
+                )
+
+            all_files = list_repo_files(
+                dataset_name, repo_type="dataset", token=READ_TOKEN
+            )
+            files_processed[dataset_name] = list(
+                set(current_dataset_processed + all_files)
+            )
 
         else:
             # ---------- One-file-at-a-time branch ----------
-            all_files = data_files.get(dataset_name) or list_repo_files(dataset_name, repo_type="dataset", token=READ_TOKEN)
-            files_to_process = [f for f in all_files if f not in current_dataset_processed and f.endswith(".parquet")]
+            all_files = data_files.get(dataset_name) or list_repo_files(
+                dataset_name, repo_type="dataset", token=READ_TOKEN
+            )
+            files_to_process = [
+                f
+                for f in all_files
+                if f not in current_dataset_processed and f.endswith(".parquet")
+            ]
 
             for fpath in files_to_process:
                 LOG.info(f"Processing {fpath} …")
-                local_path = hf_hub_download(dataset_name, filename=fpath,
-                                            repo_type="dataset",
-                                            revision=DATASET_REVISION or "main",
-                                            token=READ_TOKEN,
-                                            force_download=True, )
-                dset = load_dataset("parquet", data_files={"train": local_path})["train"]
+                local_path = hf_hub_download(
+                    dataset_name,
+                    filename=fpath,
+                    repo_type="dataset",
+                    revision=DATASET_REVISION or "main",
+                    token=READ_TOKEN,
+                    force_download=True,
+                )
+                dset = load_dataset("parquet", data_files={"train": local_path})[
+                    "train"
+                ]
                 LOG.info(f"Datafiles: {data_files.get(dataset_name)}")
 
                 LOG.info(f"Dataset summary: {dset}…")
 
                 # 1️⃣ GLOBAL DEDUP for this shard
                 dset = dedup_dataset_streaming(dset, "text", registry, hash_algo)
-                
+
                 if len(dset) == 0:
-                    LOG.warning(f"All samples in file '{fpath}' were duplicates. Skipping...")
+                    LOG.warning(
+                        f"All samples in file '{fpath}' were duplicates. Skipping..."
+                    )
                     continue
                 test_size = calculate_test_size(len(dset))
                 if len(dset) < 50 or test_size == 0:
@@ -346,16 +413,25 @@ def run(
                     tmp = dset.train_test_split(test_size=test_size, seed=2357)
                     split_d = {"train": tmp["train"], "val": tmp["test"]}
 
-                tokenized = {k: v.map(process_func_wrapper,
-                                    remove_columns=["text"],
-                                    num_proc=num_proc,
-                                    desc=f"tokenizing {fpath} {k}")
-                            for k, v in split_d.items()}
+                tokenized = {
+                    k: v.map(
+                        process_func_wrapper,
+                        remove_columns=["text"],
+                        num_proc=num_proc,
+                        desc=f"tokenizing {fpath} {k}",
+                    )
+                    for k, v in split_d.items()
+                }
 
                 for split, d in tokenized.items():
                     out_file = TRAIN_BIN_PATH if split == "train" else VAL_BIN_PATH
                     LOG.info(f"Writing {split} with {d} to {out_file} …")
-                    write_to_memmap(d, out_file, np.uint16, log_prefix=f"[{dataset_name}:{fpath}-{split}]")
+                    write_to_memmap(
+                        d,
+                        out_file,
+                        np.uint16,
+                        log_prefix=f"[{dataset_name}:{fpath}-{split}]",
+                    )
 
                 current_dataset_processed.append(fpath)
                 files_processed[dataset_name] = current_dataset_processed
@@ -370,7 +446,8 @@ def run(
     registry.close()
     LOG.info("All datasets processed and globally deduplicated.")
 
-# def run(datasets_list: list =DATASETS, data_files: dict= {},  num_proc_load_dataset: int=num_proc, 
+
+# def run(datasets_list: list =DATASETS, data_files: dict= {},  num_proc_load_dataset: int=num_proc,
 #         n_samples: int=5000000, seed: int=42, hash_algo: str = "md5", registry_cache: str | None = None):
 #     """
 #     Main function to process and tokenize datasets, saving to memory-mapped files.
@@ -476,7 +553,7 @@ def run(
 #             for split, dset in tokenized_dataset.items():
 #                 filename = TRAIN_BIN_PATH if split.lower() == "train" else VAL_BIN_PATH
 #                 write_to_memmap(dset, filename, np.uint16, log_prefix=f"[{dataset_name} - {split}]")
-            
+
 #             # For this mode, consider the whole dataset as processed once done
 #             all_files_in_repo = list_repo_files(dataset_name, repo_type="dataset", token=READ_TOKEN)
 #             current_dataset_processed_files.extend(all_files_in_repo)
@@ -486,7 +563,7 @@ def run(
 
 #         else: # PROCESS_ONE_FILE_AT_A_TIME
 #             all_files = list_repo_files(dataset_name, repo_type="dataset", token=READ_TOKEN)
-            
+
 #             files_to_process = [f for f in all_files if f not in current_dataset_processed_files and f.endswith('.parquet')]
 
 #             if not files_to_process:

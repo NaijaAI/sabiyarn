@@ -17,11 +17,12 @@ import random
 import string
 import modal
 
-project_root = os.path.join(os.path.dirname(__file__), '..')
+project_root = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, project_root)
 
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
     ENV_FILE_LOADED = True
 except ImportError:
@@ -34,9 +35,8 @@ import structlog
 
 import torch
 import torch.nn.functional as F
-from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
-from torch.distributed import init_process_group, destroy_process_group
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import SGD, Adam, AdamW
 import numpy as np
 import wandb
@@ -52,20 +52,24 @@ from sabiyarn.MHA import SelfAttnArgs
 from cut_cross_entropy import linear_cross_entropy
 from training.utils import *
 from training.constant_tokens import MASK
-from training.training_attention_mask import create_causal_mask, create_causal_mask_optimized
+from training.training_attention_mask import (
+    create_causal_mask,
+    create_causal_mask_optimized,
+)
 
 from transformers import AutoTokenizer
 from bitsandbytes import optim as bnb_optim
-            
+
 try:
     from torch.cuda.amp import GradScaler
 except ImportError:
-    from torch.amp import GradScaler  
-    
-CUDA_LAUNCH_BLOCKING=1
+    from torch.amp import GradScaler
+
+CUDA_LAUNCH_BLOCKING = 1
 try:
     import psutil
     import GPUtil
+
     MONITORING_AVAILABLE = True
 except ImportError:
     print("⚠️ psutil/GPUtil not available, system monitoring disabled")
@@ -73,31 +77,36 @@ except ImportError:
 
 LOG = structlog.stdlib.get_logger()
 
+
 def clear_cuda():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()   # also reclaims memory from inter-process communication
+        torch.cuda.ipc_collect()  # also reclaims memory from inter-process communication
         print("✅ CUDA cache cleared")
     else:
         print("⚠️ CUDA is not available on this device")
 
+
 # Example usage
 clear_cuda()
+
 
 @dataclass
 class TrainingConfig:
     # Model Architecture
-    attention_type: AttentionType = AttentionType.GQA #"self_attention" , "differential_attention", "MLA"
+    attention_type: AttentionType = (
+        AttentionType.GQA
+    )  # "self_attention" , "differential_attention", "MLA"
     dim: int = 768
     n_layers: int = 20
     n_heads: int = 8
     n_kv_heads: Optional[int] = 4
     vocab_size: int = 64000
     max_seq_len: int = 1024
-    max_batch_size: int = 8 #8
-    train_batch_size: int = 8 #8
+    max_batch_size: int = 8  # 8
+    train_batch_size: int = 8  # 8
     bias: bool = True
-    dropout: float= 0.1
+    dropout: float = 0.1
     use_kv_cache: bool = False
     # Attention-specific configs
     use_mla: bool = False
@@ -109,12 +118,12 @@ class TrainingConfig:
     mla_qk_rope_head_dim: int = 64
     mla_v_head_dim: int = 128
     mla_qk_nope_head_dim: int = 128
-    rope_theta: float=10000.0
-    rope_factor: int=1
-    beta_fast: int=32
-    beta_slow: int=1
-    mscale: float =1.0
-    
+    rope_theta: float = 10000.0
+    rope_factor: int = 1
+    beta_fast: int = 32
+    beta_slow: int = 1
+    mscale: float = 1.0
+
     # MoE Configuration (only with MLA)
     use_moe: bool = False
     n_routed_experts: int = 3
@@ -124,61 +133,65 @@ class TrainingConfig:
     score_function: str = "sigmoid"
     bias_update_speed: float = 0.001
     moe_aux_loss_weight: float = 0.001  # Weight for MoE sequence-wise auxiliary loss
-    
+
     # Multi-Token Prediction (only with MLA)
     use_multi_token_prediction: bool = False
     num_prediction_tokens: int = 2
-    mtp_loss_weight: float = 1.0  
+    mtp_loss_weight: float = 1.0
     mtp_share_embeddings: bool = True
     mtp_only_training: bool = True  # When True, only use MTP loss for training
-    
+
     # Layer Sharing (MobileLLM-style)
     layer_sharing_strategy: str = "immediate"
     layer_sharing: bool = True
     n_unique_layers: Optional[int] = 10
-    layer_sharing_strategy  = 'immediate'
-    
+    layer_sharing_strategy = "immediate"
+
     # Other model features
     use_logic_network: bool = False
     use_j_linear: bool = True
     tie_weights: bool = False
     norm_eps: float = 1e-5
     init_std: float = 0.02
-    
+
     # Training Configuration
-    
-    gradient_accumulation_steps: int = 20   # 5 * 8
+
+    gradient_accumulation_steps: int = 20  # 5 * 8
     learning_rate: float = 3e-4
     max_iters: int = 50000
     weight_decay: float = 1e-1
     beta1: float = 0.9
     beta2: float = 0.95
     grad_clip: float = 1.0
-    
+
     # Learning rate schedule
     decay_lr: bool = True
-    warmup_iters: int = 400 #1500
+    warmup_iters: int = 400
     lr_decay_iters: int = 50000
-    min_lr: float = 6e-5 # 6e-5
-    
+    min_lr: float = 6e-5
+
     # Optimizer
-    optimizer_type: str = "adamw"  # "adam", "adamw", "sgd", "adam8bit"
-    
+    optimizer_type: str = "adamw"
+
     # Loss function
     use_cut_cross_entropy: bool = True
-    
+
     # Custom masking
     use_custom_causal_mask: bool = True
-    mask_id_value: int = 1  # ID value for custom masking, this is for the end of text token id value from our tokenizer which is 1 for llama 
-    
+    mask_id_value: int = (
+        1  # ID value for custom masking, this is for the end of text token id value from our tokenizer which is 1 for llama
+    )
+
     # Data
-    dataset: str = "Aletheia-ng/pretrain_test" # "semran1/finewebedu-dedup-600k"
+    dataset: str = "Aletheia-ng/pretrain_test"  # "semran1/finewebedu-dedup-600k"
     train_data_path: str = "./training.bin"
     eval_data_path: str = "./validation.bin"
-    
+
     # Logging and checkpointing
     out_dir: str = "out"  # Base directory that will contain per-run subfolders
-    run_dir: Optional[str] = None  # Full path to the current run directory (auto-created if None)
+    run_dir: Optional[str] = (
+        None  # Full path to the current run directory (auto-created if None)
+    )
     resume_run_dir: Optional[str] = None  # When resuming, explicitly set the run folder
     eval_interval: int = 64
     log_interval: int = 16
@@ -186,7 +199,7 @@ class TrainingConfig:
     eval_only: bool = False
     always_save_checkpoint: bool = False
     init_from: str = "scratch"  # "scratch" or "resume"
-    
+
     # WandB logging
     wandb_log: bool = True
     wandb_entity: str = "damilojohn"
@@ -194,7 +207,7 @@ class TrainingConfig:
     wandb_run_name: str = "modern_training"
     wandb_tags: list = field(default_factory=lambda: ["GQA", "CCE", "MoE", "SabiYarn"])
     save_model_to_wandb: bool = False
-    
+
     # Advanced monitoring
     log_grad_norm: bool = True
     log_weights: bool = True  # Log weight distributions
@@ -202,114 +215,116 @@ class TrainingConfig:
     log_moe_metrics: bool = True  # Log MoE expert utilization
     log_attention_metrics: bool = True  # Log attention statistics
     monitor_interval: int = 50  # Log detailed metrics every N steps
-    
+
     # Generation testing
     display_model_output_iter: int = 32
     enable_generation_during_training: bool = True
     generation_max_tokens: int = 80
-    
+
     # System
     device: str = "cuda"
-    dtype: str = "bfloat16"  # "float32", "bfloat16", "float16"
+    dtype: str = "bfloat16"
     compile_model: bool = True
-    
+
     world_size: int = 1
-    attn_impl: str = 'optimized'  # either optimized or naive
-    # Distributed training (auto-detected by model)
+    dist: bool = False
+    dist_strategy: str = "zero-3"
+    backend: str = "nccl"
+    attn_impl: str = "optimized"
     auto_detect_distributed: bool = True
-    seed =42
-    n_samples = -1 # Number of samples to use for training from dataset.
-    
+    seed = 42
+    n_samples = -1
+
     # Hash registry for data deduplication
-    hash_algo: str = "md5",
-    registry_cache: str = "global_hash_registry.lmdb",
-    map_size_gb: int = 50,
-    
+    hash_algo: str = ("md5",)
+    registry_cache: str = ("global_hash_registry.lmdb",)
+    map_size_gb: int = (50,)
+
     # Overwrite train.bin and val.bin if they exist
     overwrite_data: bool = False
-    
+
     ## The below parameter should be used for only testing
     hf_repo_files = {
         "Aletheia-ng/pretrain_test": [
-            'Roleplay-Amharic_english_translation_batch_3846_1923-train.parquet',
-            'TinyStories_yoruba_english_translation_batch_2760_1380-train.parquet',
-            'afriberta-corpus_afaanoromoo_language_identification_batch_20000_20001-train.parquet',
-            'english-nigerian-pidgin_sentence-pairs_mt560_english_translation_batch_44002_22001-train.parquet',
-            'english_to_igbo_english_translation_batch_44644_522322-train.parquet',
-            'english_to_igbo_english_translation_batch_500000_250000-train.parquet',
-            'english_to_igbo_english_translation_batch_500000_500000-train.parquet',
+            "Roleplay-Amharic_english_translation_batch_3846_1923-train.parquet",
+            "TinyStories_yoruba_english_translation_batch_2760_1380-train.parquet",
+            "afriberta-corpus_afaanoromoo_language_identification_batch_20000_20001-train.parquet",
+            "english-nigerian-pidgin_sentence-pairs_mt560_english_translation_batch_44002_22001-train.parquet",
+            "english_to_igbo_english_translation_batch_44644_522322-train.parquet",
+            "english_to_igbo_english_translation_batch_500000_250000-train.parquet",
+            "english_to_igbo_english_translation_batch_500000_500000-train.parquet",
             #  'afriberta-corpus_afaanoromoo_language_identification_batch_410841_410841-train.parquet',
-            'afriberta-corpus_afaanoromoo_monolingual_batch_410841_410841-train.parquet',
-            'afriberta-corpus_gahuza_language_identification_batch_20000_20001-train.parquet',
-            'afriberta-corpus_gahuza_monolingual_batch_131953_131953-train.parquet',
-            'afriberta-corpus_igbo_monolingual_batch_337082_337082-train.parquet',
-            'afriberta-corpus_pidgin_monolingual_batch_161843_161843-train.parquet',
-            'afriberta-corpus_somali_language_identification_batch_20000_20001-train.parquet',
-            'afriberta-corpus_somali_monolingual_batch_500000_500000-train.parquet',
-            'afriberta-corpus_swahili_monolingual_batch_500000_1000000-train.parquet',
-            'afriberta-corpus_tigrinya_language_identification_batch_12076_12076-train.parquet',
-            'afriberta-corpus_tigrinya_monolingual_batch_12076_12076-train.parquet',
-            'afriberta-corpus_yoruba_monolingual_batch_149148_149148-train.parquet',
-            'afrisenti_amh_sentiment_classification_batch_5984_5984-train.parquet',
-            'afrisenti_eng_sentiment_classification_batch_11763_11763-train.parquet',
-            'afrisenti_eng_sentiment_classification_batch_1681_1681-validation.parquet',
-            'afrisenti_hau_sentiment_classification_batch_14172_14172-train.parquet',
-            'afrisenti_ibo_sentiment_classification_batch_10192_10192-train.parquet',
-            'afrisenti_swa_sentiment_classification_batch_1810_1810-train.parquet',
-            'afrisenti_swa_sentiment_classification_batch_453_453-validation.parquet',
-            'afrisenti_yor_sentiment_classification_batch_8522_8522-train.parquet',
-            'c4_af_language_identification_batch_20000_20001-train.parquet',
-            'c4_af_monolingual_batch_500000_1000000-train.parquet',
-            'c4_am_language_identification_batch_20000_20001-train.parquet',
-            'c4_am_monolingual_batch_162870_162870-train.parquet',
-            'c4_ha_language_identification_batch_20000_20001-train.parquet',
-            'c4_ha_monolingual_batch_247479_247479-train.parquet',
-            'c4_ig_language_identification_batch_20000_20001-train.parquet',
-            'c4_ig_monolingual_batch_92909_92909-train.parquet',
-            'c4_so_language_identification_batch_20000_20001-train.parquet',
-            'c4_so_monolingual_batch_500000_500000-train.parquet',
-            'c4_st_language_identification_batch_20000_20001-train.parquet',
-            'c4_st_monolingual_batch_66837_66837-train.parquet',
-            'c4_sw_language_identification_batch_20000_20001-train.parquet',
-            'c4_sw_monolingual_batch_500000_500000-train.parquet',
-            'c4_xh_language_identification_batch_20000_20001-train.parquet',
-            'c4_xh_monolingual_batch_69048_69048-train.parquet',
-            'c4_yo_language_identification_batch_20000_20001-train.parquet',
-            'c4_yo_monolingual_batch_46214_46214-train.parquet',
-            'c4_zu_language_identification_batch_20000_20001-train.parquet',
-            'c4_zu_monolingual_batch_500000_500000-train.parquet',
-            'fineweb-bbc-news_CC-MAIN-2013-20_monolingual_batch_179829_179829-train.parquet',
-            'fineweb-bbc-news_CC-MAIN-2013-20_monolingual_batch_20000_20001-train.parquet',
-            'flores_101_afr_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_afr_topic_classification_batch_997_997-dev.parquet',
-            'flores_101_eng_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_eng_topic_classification_batch_997_997-dev.parquet',
-            'flores_101_hau_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_hau_topic_classification_batch_997_997-dev.parquet',
-            'flores_101_ibo_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_ibo_topic_classification_batch_997_997-dev.parquet',
-            'flores_101_som_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_som_topic_classification_batch_997_997-dev.parquet',
-            'flores_101_swh_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_swh_topic_classification_batch_997_997-dev.parquet',
-            'flores_101_wol_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_wol_topic_classification_batch_997_997-dev.parquet',
-            'flores_101_xho_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_xho_topic_classification_batch_997_997-dev.parquet',
-            'flores_101_yor_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_yor_topic_classification_batch_997_997-dev.parquet',
-            'flores_101_zul_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_zul_topic_classification_batch_997_997-dev.parquet',
-            'kinyarwanda_monolingual_v01.0_kinyarwanda_monolingual_batch_78733_78733-train.parquet',
-            'swahili-english-translation_swahili_translation_batch_500000_1000000-train.parquet',
-            'twi-english-parallel-synthetic-50m_twi_translation_batch_500000_1000000-train.parquet',
-            'xlsum_amharic_headline_batch_57294_57294-train.parquet',
-            'xlsum_amharic_headline_batch_719_719-validation.parquet']
+            "afriberta-corpus_afaanoromoo_monolingual_batch_410841_410841-train.parquet",
+            "afriberta-corpus_gahuza_language_identification_batch_20000_20001-train.parquet",
+            "afriberta-corpus_gahuza_monolingual_batch_131953_131953-train.parquet",
+            "afriberta-corpus_igbo_monolingual_batch_337082_337082-train.parquet",
+            "afriberta-corpus_pidgin_monolingual_batch_161843_161843-train.parquet",
+            "afriberta-corpus_somali_language_identification_batch_20000_20001-train.parquet",
+            "afriberta-corpus_somali_monolingual_batch_500000_500000-train.parquet",
+            "afriberta-corpus_swahili_monolingual_batch_500000_1000000-train.parquet",
+            "afriberta-corpus_tigrinya_language_identification_batch_12076_12076-train.parquet",
+            "afriberta-corpus_tigrinya_monolingual_batch_12076_12076-train.parquet",
+            "afriberta-corpus_yoruba_monolingual_batch_149148_149148-train.parquet",
+            "afrisenti_amh_sentiment_classification_batch_5984_5984-train.parquet",
+            "afrisenti_eng_sentiment_classification_batch_11763_11763-train.parquet",
+            "afrisenti_eng_sentiment_classification_batch_1681_1681-validation.parquet",
+            "afrisenti_hau_sentiment_classification_batch_14172_14172-train.parquet",
+            "afrisenti_ibo_sentiment_classification_batch_10192_10192-train.parquet",
+            "afrisenti_swa_sentiment_classification_batch_1810_1810-train.parquet",
+            "afrisenti_swa_sentiment_classification_batch_453_453-validation.parquet",
+            "afrisenti_yor_sentiment_classification_batch_8522_8522-train.parquet",
+            "c4_af_language_identification_batch_20000_20001-train.parquet",
+            "c4_af_monolingual_batch_500000_1000000-train.parquet",
+            "c4_am_language_identification_batch_20000_20001-train.parquet",
+            "c4_am_monolingual_batch_162870_162870-train.parquet",
+            "c4_ha_language_identification_batch_20000_20001-train.parquet",
+            "c4_ha_monolingual_batch_247479_247479-train.parquet",
+            "c4_ig_language_identification_batch_20000_20001-train.parquet",
+            "c4_ig_monolingual_batch_92909_92909-train.parquet",
+            "c4_so_language_identification_batch_20000_20001-train.parquet",
+            "c4_so_monolingual_batch_500000_500000-train.parquet",
+            "c4_st_language_identification_batch_20000_20001-train.parquet",
+            "c4_st_monolingual_batch_66837_66837-train.parquet",
+            "c4_sw_language_identification_batch_20000_20001-train.parquet",
+            "c4_sw_monolingual_batch_500000_500000-train.parquet",
+            "c4_xh_language_identification_batch_20000_20001-train.parquet",
+            "c4_xh_monolingual_batch_69048_69048-train.parquet",
+            "c4_yo_language_identification_batch_20000_20001-train.parquet",
+            "c4_yo_monolingual_batch_46214_46214-train.parquet",
+            "c4_zu_language_identification_batch_20000_20001-train.parquet",
+            "c4_zu_monolingual_batch_500000_500000-train.parquet",
+            "fineweb-bbc-news_CC-MAIN-2013-20_monolingual_batch_179829_179829-train.parquet",
+            "fineweb-bbc-news_CC-MAIN-2013-20_monolingual_batch_20000_20001-train.parquet",
+            "flores_101_afr_topic_classification_batch_1012_1012-devtest.parquet",
+            "flores_101_afr_topic_classification_batch_997_997-dev.parquet",
+            "flores_101_eng_topic_classification_batch_1012_1012-devtest.parquet",
+            "flores_101_eng_topic_classification_batch_997_997-dev.parquet",
+            "flores_101_hau_topic_classification_batch_1012_1012-devtest.parquet",
+            "flores_101_hau_topic_classification_batch_997_997-dev.parquet",
+            "flores_101_ibo_topic_classification_batch_1012_1012-devtest.parquet",
+            "flores_101_ibo_topic_classification_batch_997_997-dev.parquet",
+            "flores_101_som_topic_classification_batch_1012_1012-devtest.parquet",
+            "flores_101_som_topic_classification_batch_997_997-dev.parquet",
+            "flores_101_swh_topic_classification_batch_1012_1012-devtest.parquet",
+            "flores_101_swh_topic_classification_batch_997_997-dev.parquet",
+            "flores_101_wol_topic_classification_batch_1012_1012-devtest.parquet",
+            "flores_101_wol_topic_classification_batch_997_997-dev.parquet",
+            "flores_101_xho_topic_classification_batch_1012_1012-devtest.parquet",
+            "flores_101_xho_topic_classification_batch_997_997-dev.parquet",
+            "flores_101_yor_topic_classification_batch_1012_1012-devtest.parquet",
+            "flores_101_yor_topic_classification_batch_997_997-dev.parquet",
+            "flores_101_zul_topic_classification_batch_1012_1012-devtest.parquet",
+            "flores_101_zul_topic_classification_batch_997_997-dev.parquet",
+            "kinyarwanda_monolingual_v01.0_kinyarwanda_monolingual_batch_78733_78733-train.parquet",
+            "swahili-english-translation_swahili_translation_batch_500000_1000000-train.parquet",
+            "twi-english-parallel-synthetic-50m_twi_translation_batch_500000_1000000-train.parquet",
+            "xlsum_amharic_headline_batch_57294_57294-train.parquet",
+            "xlsum_amharic_headline_batch_719_719-validation.parquet",
+        ]
     }
 
-# set seed
 
-class SabiYarnTrainer:   
+class SabiYarnTrainer:
     def __init__(self, config: TrainingConfig, volume: modal.Volume = None):
         self.local_iter_num = 0
         self.running_mfu = -1.0
@@ -317,11 +332,13 @@ class SabiYarnTrainer:
         self.iter_training_limit = 4000
         self.iterate_from_start = True
         self.config = config
-        self.lr_manually_reduced= False
+        self.lr_manually_reduced = False
         self.volume = volume
-        
+        self.master_process = True
+        self.seed_offset = 0
+        self.dist = config.dist
+
         self.setup_environment()
-        self.setup_distributed()
         self.setup_output_dirs()
         self.setup_logging()
         self._resume_checkpoint = None
@@ -329,6 +346,8 @@ class SabiYarnTrainer:
         self.setup_model()
         self.setup_optimizer()
         self.setup_compilation()
+        self.setup_distributed()
+
         # torch.seed(config.seed)
         # Training state
         # Only initialize defaults when starting from scratch.
@@ -336,88 +355,105 @@ class SabiYarnTrainer:
         if self.config.init_from != "resume":
             self.iter_num = 0
             self.best_val_loss = 1e9
-       
-        
+
     def setup_environment(self):
         """Setup environment variables and device configuration."""
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
-        
+
         # Set up device and dtype
         self.device_type = "cuda" if "cuda" in self.config.device else "cpu"
-        
+
         if self.device_type == "cuda":
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
-        
+
         # Configure precision
         self.ptdtype = {
             "float32": torch.float32,
             "bfloat16": torch.bfloat16,
             "float16": torch.float16,
         }[self.config.dtype]
-        
+
         self.ctx = (
             nullcontext()
             if self.device_type == "cpu"
             else torch.amp.autocast(device_type=self.device_type, dtype=self.ptdtype)
         )
-        
+
         # Initialize gradient scaler
-        self.scaler = GradScaler('cuda',enabled=(self.config.dtype == "float16"))
-        
+        self.scaler = GradScaler("cuda", enabled=(self.config.dtype == "float16"))
+
     def setup_distributed(self):
         """Setup distributed training if available."""
-        # Let the model auto-detect distributed configuration
-        self.ddp = False
-        self.master_process = True
-        self.seed_offset = 0
-        self.ddp_world_size = 1
-        
-        # Check if we should initialize DDP manually
-        if "WORLD_SIZE" in os.environ:
-            world_size = int(os.environ["WORLD_SIZE"])
-            if world_size > 1:
-                backend = "nccl"
-                rank = int(os.environ.get("RANK", 0))
-                local_rank = int(os.environ.get("LOCAL_RANK", 0))
-                
-                init_process_group(backend=backend)
-                torch.cuda.set_device(local_rank)
-                
-                self.ddp = True
-                self.master_process = rank == 0
+
+        if self.config.dist:
+            import torch
+            import os
+            from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+            torch.manual_seed(1337 + self.seed_offset)
+
+            os.environ["WORLD_SIZE"] = str(self.config.world_size)
+            os.environ["MASTER_ADDR"] = "localhost"
+            os.environ["MASTER_PORT"] = "50000"
+            try:
+
+                dist.init_process_group(backend=self.config.backend,
+                                        init_method="tcp://localhost:50000",
+                                        rank=int(os.environ.get("RANK")),
+                                        world_size=self.config.world_size)
+                rank = dist.get_rank()
+
+                local_rank = int(
+                    os.environ.get("LOCAL_RANK", rank % torch.cuda.device_count())
+                )
+                LOG.info(f"running on process {local_rank} with rank {rank}")
+
+                torch.cuda.set_device(rank)
+
+                assert self.config.gradient_accumulation_steps % self.config.world_size == 0
+                self.config.gradient_accumulation_steps //= self.config.world_size
+
+                self.model = self.model.to(f'cuda:{local_rank}')
+                self.model = DDP(self.model, device_ids=[local_rank])
+
+                self.master_process = (rank == 0)
+                if self.master_process:
+                    LOG.info(f"This is the master process with rank {local_rank}")
+
                 self.seed_offset = rank
-                self.ddp_world_size = world_size
-                self.local_rank = local_rank
-                
-                # Adjust gradient accumulation for distributed training
-                assert self.config.gradient_accumulation_steps % world_size == 0
-                self.config.gradient_accumulation_steps //= world_size
-                
-                LOG.info(f"Distributed training initialized: rank {rank}/{world_size}")
-        
-        # Calculate tokens per iteration
-        self.tokens_per_iter = (
-            self.config.gradient_accumulation_steps * 
-            self.ddp_world_size * 
-            self.config.train_batch_size * 
-            self.config.max_seq_len
-        )
-        LOG.info(f"Tokens per iteration: {self.tokens_per_iter:,}")
-        
-        # Set random seed
-        torch.manual_seed(1337 + self.seed_offset)
-        
+                LOG.info(
+                    f"Distributed training initialized: rank {rank}/{self.config.world_size}"
+                )
+            except Exception as e:
+                LOG.error(f"Initializing distributed training failed with error {e}")
+                dist.destroy_process_group()
+
+            # Calculate tokens per iteration
+            self.tokens_per_iter = (
+                self.config.gradient_accumulation_steps
+                * self.config.world_size
+                * self.config.train_batch_size
+                * self.config.max_seq_len
+            )
+            LOG.info(f"Tokens per iteration: {self.tokens_per_iter:,}")
+
+            # Set random seed
+            torch.manual_seed(1337 + self.seed_offset)
+        else:
+            rank = 0
+            self.config.world_size = 1
+            self.master_process = True
+
     def setup_logging(self):
         """Setup output directory and wandb logging."""
         if self.master_process:
             # Ensure run directory exists
             os.makedirs(self.run_dir, exist_ok=True)
-            
+
             if self.config.wandb_log:
                 # Check W&B authentication
                 self._check_wandb_auth()
-                
+
                 # Create dynamic run name with timestamp and key parameters
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 run_name = f"{self.config.wandb_run_name}_{self.config.attention_type}"
@@ -426,17 +462,19 @@ class SabiYarnTrainer:
                 if self.config.use_multi_token_prediction:
                     run_name += f"_mtp{self.config.num_prediction_tokens}"
                 run_name += f"_{timestamp}"
-                
+
                 # Enhanced W&B config
                 wandb_config = self.config.__dict__.copy()
-                wandb_config.update({
-                    "model_size": "TBD",  # Will be updated after model creation
-                    "dataset_name": self.config.dataset,
-                    "hardware": self._get_hardware_info(),
-                    "git_commit": self._get_git_commit(),
-                    "run_dir": self.run_dir,
-                })
-                
+                wandb_config.update(
+                    {
+                        "model_size": "TBD",  # Will be updated after model creation
+                        "dataset_name": self.config.dataset,
+                        "hardware": self._get_hardware_info(),
+                        "git_commit": self._get_git_commit(),
+                        "run_dir": self.run_dir,
+                    }
+                )
+
                 wandb.init(
                     project=self.config.wandb_project,
                     entity=self.config.wandb_entity,
@@ -444,28 +482,26 @@ class SabiYarnTrainer:
                     config=wandb_config,
                     tags=self.config.wandb_tags,
                     notes=f"SabiYarn training with {self.config.attention_type} attention",
-                    save_code=True
+                    save_code=True,
                 )
                 LOG.info(f"WandB logging initialized: {run_name}")
-    
+
     def _check_wandb_auth(self):
         """Check W&B authentication and provide helpful guidance."""
         try:
             # Try to get API key from various sources
-            api_key = (
-                os.getenv("WANDB_API_KEY") or 
-                wandb.api.api_key or
-                None
-            ) #"3d4f49c65c423034b92482c50338953c67f62254"
-            
+            api_key = os.getenv("WANDB_API_KEY") or wandb.api.api_key or None
+
             if not api_key:
                 LOG.warning("⚠️ W&B API key not found!")
                 LOG.info("🔧 To authenticate with W&B, choose one of these methods:")
                 LOG.info("   1. Run: wandb login")
-                LOG.info("   2. Set environment variable: export WANDB_API_KEY=your_key")
+                LOG.info(
+                    "   2. Set environment variable: export WANDB_API_KEY=your_key"
+                )
                 LOG.info("   3. Create .env file with: WANDB_API_KEY=your_key")
                 LOG.info("   4. Get your key from: https://wandb.ai/authorize")
-                
+
                 # Try to authenticate interactively if possible
                 try:
                     wandb.login()
@@ -477,45 +513,54 @@ class SabiYarnTrainer:
                     return
             else:
                 LOG.info("✅ W&B API key found")
-                
+
         except Exception as e:
             LOG.warning(f"⚠️ W&B authentication check failed: {e}")
             LOG.info("💡 Continuing with W&B - it may prompt for login...")
-    
+
     def _get_hardware_info(self) -> Dict[str, Any]:
         """Get hardware information for logging."""
         info = {}
-        
+
         if MONITORING_AVAILABLE:
             try:
-                info.update({
-                    "cpu_count": psutil.cpu_count(),
-                    "memory_gb": psutil.virtual_memory().total / (1024**3),
-                })
+                info.update(
+                    {
+                        "cpu_count": psutil.cpu_count(),
+                        "memory_gb": psutil.virtual_memory().total / (1024**3),
+                    }
+                )
             except:
                 pass
-        
+
         if torch.cuda.is_available():
             try:
-                info.update({
-                    "gpu_count": torch.cuda.device_count(),
-                    "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.device_count() > 0 else None,
-                    "cuda_version": torch.version.cuda,
-                })
+                info.update(
+                    {
+                        "gpu_count": torch.cuda.device_count(),
+                        "gpu_name": (
+                            torch.cuda.get_device_name(0)
+                            if torch.cuda.device_count() > 0
+                            else None
+                        ),
+                        "cuda_version": torch.version.cuda,
+                    }
+                )
             except:
                 pass
-        
+
         return info
-    
+
     def _get_git_commit(self) -> Optional[str]:
         """Get current git commit hash."""
         try:
             import subprocess
+
             result = subprocess.run(
-                ["git", "rev-parse", "HEAD"], 
-                capture_output=True, 
-                text=True, 
-                cwd=os.path.dirname(__file__)
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                cwd=os.path.dirname(__file__),
             )
             return result.stdout.strip() if result.returncode == 0 else None
         except:
@@ -534,14 +579,14 @@ class SabiYarnTrainer:
             ckpt_path, map_location=self.config.device, weights_only=False
         )
         return self._resume_checkpoint
-    
+
     def get_system_metrics(self) -> Dict[str, float]:
         """Get current system metrics."""
         metrics = {}
-        
+
         if not MONITORING_AVAILABLE:
             return metrics
-        
+
         try:
             # CPU and Memory
             metrics["system/cpu_percent"] = psutil.cpu_percent()
@@ -550,7 +595,7 @@ class SabiYarnTrainer:
             metrics["system/memory_available_gb"] = memory.available / (1024**3)
         except:
             pass
-        
+
         # GPU metrics
         if torch.cuda.is_available():
             try:
@@ -562,133 +607,159 @@ class SabiYarnTrainer:
                     metrics["system/gpu_temperature"] = gpu.temperature
             except:
                 pass  # GPU monitoring failed, continue without
-                
+
             try:
                 # PyTorch GPU memory
-                metrics["system/gpu_memory_allocated_gb"] = torch.cuda.memory_allocated() / (1024**3)
-                metrics["system/gpu_memory_reserved_gb"] = torch.cuda.memory_reserved() / (1024**3)
+                metrics["system/gpu_memory_allocated_gb"] = (
+                    torch.cuda.memory_allocated() / (1024**3)
+                )
+                metrics["system/gpu_memory_reserved_gb"] = (
+                    torch.cuda.memory_reserved() / (1024**3)
+                )
             except:
                 pass
-        
+
         return metrics
-    
+
     def get_moe_metrics(self, model) -> Dict[str, float]:
         """Get MoE-specific metrics."""
         metrics = {}
-        
+
         if not self.config.use_moe:
             return metrics
-            
-        raw_model = model.module if self.ddp else model
-        
+
+        raw_model_obj = model.module if isinstance(model, DDP) else model
+
         # Find MoE layers
         moe_layers = []
-        for name, module in raw_model.named_modules():
-            if hasattr(module, 'gate') and hasattr(module.gate, 'expert_bias'):
+        for name, module in raw_model_obj.named_modules():
+            if hasattr(module, "gate") and hasattr(module.gate, "expert_bias"):
                 moe_layers.append((name, module))
-        
+
         if moe_layers:
             # Expert bias statistics
             all_biases = []
             for name, moe_layer in moe_layers:
                 expert_bias = moe_layer.gate.expert_bias.data
                 all_biases.append(expert_bias)
-                
+
                 # Per-layer metrics
                 metrics[f"moe/{name}/expert_bias_mean"] = expert_bias.mean().item()
                 metrics[f"moe/{name}/expert_bias_std"] = expert_bias.std().item()
                 metrics[f"moe/{name}/expert_bias_max"] = expert_bias.max().item()
                 metrics[f"moe/{name}/expert_bias_min"] = expert_bias.min().item()
-            
+
             # Global MoE metrics
             if all_biases:
                 global_bias = torch.cat(all_biases)
                 metrics["moe/global_expert_bias_mean"] = global_bias.mean().item()
                 metrics["moe/global_expert_bias_std"] = global_bias.std().item()
-        
+
         return metrics
-    
+
     def get_gradient_metrics(self, model) -> Dict[str, float]:
         """Get gradient statistics."""
         metrics = {}
-        
+
         total_norm = 0.0
         param_count = 0
-        
-        for name, param in model.named_parameters():
+        Model = model.module if isinstance(model, DDP) else model
+
+
+        for name, param in model.module.named_parameters():
             if param.grad is not None:
                 param_norm = param.grad.data.norm(2)
                 total_norm += param_norm.item() ** 2
                 param_count += 1
-                
+
                 # Log gradients for key components
-                if any(key in name for key in ['gate', 'expert', 'attention', 'lm_head']):
+                if any(
+                    key in name for key in ["gate", "expert", "attention", "lm_head"]
+                ):
                     metrics[f"grad/{name.replace('.', '/')}_norm"] = param_norm.item()
-        
+
         if param_count > 0:
-            metrics["grad/global_norm"] = total_norm ** 0.5
+            metrics["grad/global_norm"] = total_norm**0.5
             metrics["grad/param_count"] = param_count
-        
+
         return metrics
-    
+
     def get_weight_metrics(self, model) -> Dict[str, float]:
         """Get weight distribution statistics."""
         metrics = {}
-        
+        raw_model_obj = model.module if isinstance(model, DDP) else model
+
         for name, param in model.named_parameters():
             if param.requires_grad:
                 weight_data = param.data
-                
+
                 # Log statistics for key components
-                if any(key in name for key in ['gate', 'expert', 'attention', 'lm_head', 'tok_embeddings']):
-                    clean_name = name.replace('.', '/')
+                if any(
+                    key in name
+                    for key in [
+                        "gate",
+                        "expert",
+                        "attention",
+                        "lm_head",
+                        "tok_embeddings",
+                    ]
+                ):
+                    clean_name = name.replace(".", "/")
                     metrics[f"weights/{clean_name}_mean"] = weight_data.mean().item()
                     metrics[f"weights/{clean_name}_std"] = weight_data.std().item()
                     metrics[f"weights/{clean_name}_max"] = weight_data.max().item()
                     metrics[f"weights/{clean_name}_min"] = weight_data.min().item()
-        
+
         return metrics
-    
+
     def log_advanced_metrics(self, loss: torch.Tensor, model, optimizer):
         """Log comprehensive metrics for SOTA monitoring."""
         if not self.config.wandb_log or not self.master_process:
             return
-        
+
         # Base metrics
         metrics = {
             "train/loss": loss.item(),
             "train/lr": optimizer.param_groups[0]["lr"],
-            "train/epoch": self.iter_num * self.config.train_batch_size / 50000,  # Approximate
+            "train/epoch": self.iter_num
+            * self.config.train_batch_size
+            / 50000,  # Approximate
             "train/step": self.iter_num,
         }
-        
+
         # Performance metrics
         current_time = time.time()
-        if hasattr(self, 'step_start_time'):
+        if hasattr(self, "step_start_time"):
             step_time = current_time - self.step_start_time
             metrics["perf/tokens_per_sec"] = self.tokens_per_iter / step_time
             metrics["perf/step_time_ms"] = step_time * 1000
         self.step_start_time = current_time
-        
+
         # Gradient monitoring
         if self.config.log_grad_norm:
             metrics.update(self.get_gradient_metrics(model))
-        
+
         # Weight monitoring (less frequent)
-        if self.config.log_weights and self.iter_num % (self.config.monitor_interval * 4) == 0:
+        if (
+            self.config.log_weights
+            and self.iter_num % (self.config.monitor_interval * 4) == 0
+        ):
             metrics.update(self.get_weight_metrics(model))
-        
+
         # MoE-specific metrics
         if self.config.log_moe_metrics and self.config.use_moe:
             metrics.update(self.get_moe_metrics(model))
-        
+
         # System metrics (less frequent)
-        if self.config.log_system_metrics and self.iter_num % self.config.monitor_interval == 0:
+        if (
+            self.config.log_system_metrics
+            and self.iter_num % self.config.monitor_interval == 0
+        ):
             metrics.update(self.get_system_metrics())
-        
+
         # Log to W&B
         wandb.log(metrics, step=self.iter_num)
-                
+
     def setup_data(self):
         """Setup data loading."""
         LOG.info("Preparing dataset...")
@@ -705,9 +776,11 @@ class SabiYarnTrainer:
                     os.remove(self.config.train_data_path)
                 if os.path.exists(self.config.eval_data_path):
                     os.remove(self.config.eval_data_path)
-                    
+
             state_dir = os.path.dirname(self.config.train_data_path)
-            os.environ.setdefault("PREP_STATE_PATH", os.path.join(state_dir, "data_struct.json"))
+            os.environ.setdefault(
+                "PREP_STATE_PATH", os.path.join(state_dir, "data_struct.json")
+            )
         except Exception:
             pass
 
@@ -717,36 +790,55 @@ class SabiYarnTrainer:
                 return os.path.exists(path) and os.path.getsize(path) > 0
             except Exception:
                 return False
-            
-        LOG.info(f"Checking for existing data bins...{_is_nonempty(self.config.train_data_path) and _is_nonempty(self.config.eval_data_path) and not self.config.overwrite_data}")
 
-        if _is_nonempty(self.config.train_data_path) and _is_nonempty(self.config.eval_data_path) and not self.config.overwrite_data: # os.getenv("FORCE_PREP", "0") != "1":
+        LOG.info(
+            f"Checking for existing data bins...{_is_nonempty(self.config.train_data_path) and _is_nonempty(self.config.eval_data_path) and not self.config.overwrite_data}"
+        )
+
+        if (
+            _is_nonempty(self.config.train_data_path)
+            and _is_nonempty(self.config.eval_data_path)
+            and not self.config.overwrite_data
+        ):  # os.getenv("FORCE_PREP", "0") != "1":
             try:
                 import numpy as np
+
                 tr = np.memmap(self.config.train_data_path, dtype=np.uint16, mode="r")
                 va = np.memmap(self.config.eval_data_path, dtype=np.uint16, mode="r")
-                LOG.info(f"Using existing bins: train={len(tr)} tokens, val={len(va)} tokens")
+                LOG.info(
+                    f"Using existing bins: train={len(tr)} tokens, val={len(va)} tokens"
+                )
             except Exception:
                 LOG.info("Using existing bins (could not read counts)")
         else:
-            prepare.run([self.config.dataset], self.config.hf_repo_files, os.cpu_count(), self.config.n_samples, self.config.seed,
-                        self.config.hash_algo, self.config.registry_cache, self.config.map_size_gb)
+            prepare.run(
+                [self.config.dataset],
+                self.config.hf_repo_files,
+                os.cpu_count(),
+                self.config.n_samples,
+                self.config.seed,
+                self.config.hash_algo,
+                self.config.registry_cache,
+                self.config.map_size_gb,
+            )
             if self.volume:
                 self.volume.commit()
-        
+
         # Initialize tokenizer if available
         self.tokenizer = None
         if AutoTokenizer is not None:
             try:
-                self.tokenizer = AutoTokenizer.from_pretrained("Aletheia-ng/SabiYarn_test")
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    "Aletheia-ng/SabiYarn_test"
+                )
                 LOG.info("Tokenizer loaded successfully")
             except Exception as e:
                 LOG.warning(f"Could not load tokenizer: {e}")
-                
+
     def setup_model(self):
         """Setup the SabiYarn model with all configurations."""
         LOG.info("Initializing model...")
-        
+
         if self.config.init_from == "scratch":
             # Create model configuration based on attention type
             model_args = self.create_model_args()
@@ -754,36 +846,38 @@ class SabiYarnTrainer:
             model_size_info = self.model.get_model_size()
             LOG.info(f"Model initialized from scratch: {model_size_info}")
             LOG.info(f"Model: {self.model}")
-            
+
             # Update W&B with actual model size
             if self.config.wandb_log and self.master_process:
-                wandb.config.update({"model_size": model_size_info}, allow_val_change=True)
-            
+                wandb.config.update(
+                    {"model_size": model_size_info}, allow_val_change=True
+                )
+
         elif self.config.init_from == "resume":
             # Load from checkpoint (single-pass via cache)
             checkpoint = self._get_resume_checkpoint()
-            
+
             model_args = checkpoint["model_args"]
             self.model = SabiYarn(model_args)
             self.model.load_state_dict(checkpoint["model"], strict=False)
-            
+
             self.iter_num = checkpoint["iter_num"] if not self.iterate_from_start else 0
             self.best_val_loss = checkpoint["best_val_loss"]
-            
+
             LOG.info(f"Model resumed from checkpoint: {self.model.get_model_size()}")
-            
+
         self.model.to(device=torch.device(self.config.device), dtype=self.ptdtype)
-        
+
     def create_model_args(self) -> ModelArgs:
         """Create ModelArgs based on training configuration."""
-        
+
         # Create attention-specific configurations
         mla_config = None
         diff_attn_config = None
         gqa_config = None
         mha_config = None
-        
-        if self.config.attention_type ==  AttentionType.MLA:
+
+        if self.config.attention_type == AttentionType.MLA:
             mla_config = MLAConfig(
                 hidden_size=self.config.dim,
                 num_heads=self.config.n_heads,
@@ -797,15 +891,15 @@ class SabiYarnTrainer:
                 qk_nope_head_dim=self.config.mla_qk_nope_head_dim,
                 attention_bias=False,
                 original_seq_len=self.config.max_seq_len,
-                world_size = self.config.world_size,
-                attn_impl= self.config.attn_impl,
+                world_size=self.config.world_size,
+                attn_impl=self.config.attn_impl,
                 rope_theta=self.config.rope_theta,
                 rope_factor=self.config.rope_factor,
                 beta_fast=self.config.beta_fast,
                 beta_slow=self.config.beta_slow,
-                mscale=self.config.mscale
+                mscale=self.config.mscale,
             )
-            
+
         elif self.config.attention_type == AttentionType.DIFFERENTIAL_ATTENTION:
             diff_attn_config = DiffAttnArgs(
                 depth=0,  # Will be set per layer
@@ -814,18 +908,30 @@ class SabiYarnTrainer:
                 embed_dim=self.config.dim,
                 n_kv_heads=self.config.n_kv_heads or self.config.n_heads,
                 max_seq_len=self.config.max_seq_len,
-                norm_eps=self.config.norm_eps
+                norm_eps=self.config.norm_eps,
             )
-            
+
         elif self.config.attention_type == AttentionType.GQA:
-            gqa_config = GQAArgs(dim= self.config.dim, n_kv_heads= self.config.n_kv_heads, n_heads = self.config.n_heads,  
-                    max_seq_len = self.config.max_seq_len, max_batch_size = self.config.max_batch_size, use_kv_cache = self.config.use_kv_cache, 
-                    dropout = self.config.dropout)
+            gqa_config = GQAArgs(
+                dim=self.config.dim,
+                n_kv_heads=self.config.n_kv_heads,
+                n_heads=self.config.n_heads,
+                max_seq_len=self.config.max_seq_len,
+                max_batch_size=self.config.max_batch_size,
+                use_kv_cache=self.config.use_kv_cache,
+                dropout=self.config.dropout,
+            )
         else:
-            mha_config = SelfAttnArgs(dim= self.config.dim,  n_heads = self.config.n_heads,  
-                    max_seq_len = self.config.max_seq_len, max_batch_size = self.config.max_batch_size, use_kv_cache = self.config.use_kv_cache, bias= self.config.bias, dropout=self.config.dropout)
-            
- 
+            mha_config = SelfAttnArgs(
+                dim=self.config.dim,
+                n_heads=self.config.n_heads,
+                max_seq_len=self.config.max_seq_len,
+                max_batch_size=self.config.max_batch_size,
+                use_kv_cache=self.config.use_kv_cache,
+                bias=self.config.bias,
+                dropout=self.config.dropout,
+            )
+
         return ModelArgs(
             # Basic architecture
             dim=self.config.dim,
@@ -835,14 +941,12 @@ class SabiYarnTrainer:
             vocab_size=self.config.vocab_size,
             max_batch_size=self.config.max_batch_size,
             max_seq_len=self.config.max_seq_len,
-            
             # Attention configuration
             attention_type=self.config.attention_type,
             mla_config=mla_config,
             diff_attn_config=diff_attn_config,
-            mha_config = mha_config,
-            gqa_config = gqa_config,
-            
+            mha_config=mha_config,
+            gqa_config=gqa_config,
             # MoE configuration (only with MLA)
             moe=self.config.use_moe and self.config.attention_type == "MLA",
             n_routed_experts=self.config.n_routed_experts,
@@ -852,30 +956,29 @@ class SabiYarnTrainer:
             bias_update_speed=self.config.bias_update_speed,
             moe_aux_loss_weight=self.config.moe_aux_loss_weight,
             score_function=self.config.score_function,
-            
             # Multi-token prediction (only with MLA)
-            multi_token_prediction=self.config.use_multi_token_prediction and self.config.attention_type == "MLA",
+            multi_token_prediction=self.config.use_multi_token_prediction
+            and self.config.attention_type == "MLA",
             num_prediction_tokens=self.config.num_prediction_tokens,
             mtp_loss_weight=self.config.mtp_loss_weight,
             mtp_share_embeddings=self.config.mtp_share_embeddings,
-            
             # Layer sharing
             layer_sharing=self.config.layer_sharing,
             n_unique_layers=self.config.n_unique_layers,
             layer_sharing_strategy=self.config.layer_sharing_strategy,
-            
             # Other features
             logic_network=self.config.use_logic_network,
             use_j=self.config.use_j_linear,
             tie_weights=self.config.tie_weights,
             norm_eps=self.config.norm_eps,
             init_std=self.config.init_std,
-            
             # Distributed training (auto-detected)
             auto_detect_distributed=self.config.auto_detect_distributed,
         )
 
-    def count_non_masked_tokens(self, tensor: torch.Tensor, mask_val: int = -100) -> int:
+    def count_non_masked_tokens(
+        self, tensor: torch.Tensor, mask_val: int = -100
+    ) -> int:
         return (tensor != mask_val).sum().item()
 
     def setup_optimizer(self):
@@ -885,40 +988,40 @@ class SabiYarnTrainer:
                 self.model.parameters(),
                 lr=self.config.learning_rate,
                 betas=(self.config.beta1, self.config.beta2),
-                weight_decay=self.config.weight_decay
+                weight_decay=self.config.weight_decay,
             )
         elif self.config.optimizer_type == "adamw":
             self.optimizer = AdamW(
                 self.model.parameters(),
                 lr=self.config.learning_rate,
                 betas=(self.config.beta1, self.config.beta2),
-                weight_decay=self.config.weight_decay
+                weight_decay=self.config.weight_decay,
             )
         elif self.config.optimizer_type == "sgd":
             self.optimizer = SGD(
                 self.model.parameters(),
                 lr=self.config.learning_rate,
-                weight_decay=self.config.weight_decay
+                weight_decay=self.config.weight_decay,
             )
         elif self.config.optimizer_type == "adam8bit" and bnb_optim is not None:
             self.optimizer = bnb_optim.Adam8bit(
                 self.model.parameters(),
                 lr=self.config.learning_rate,
                 betas=(self.config.beta1, self.config.beta2),
-                weight_decay=self.config.weight_decay
+                weight_decay=self.config.weight_decay,
             )
         else:
             raise ValueError(f"Unsupported optimizer: {self.config.optimizer_type}")
-            
+
         # Load optimizer state if resuming
         if self.config.init_from == "resume":
             checkpoint = self._get_resume_checkpoint()
             self.optimizer.load_state_dict(checkpoint["optimizer"])
             # Free after use to release memory
             self._resume_checkpoint = None
-            
+
         LOG.info(f"Optimizer initialized: {self.config.optimizer_type}")
-        
+
     def setup_compilation(self):
         """Setup model compilation and DDP wrapping."""
         # Compile model if requested
@@ -926,35 +1029,53 @@ class SabiYarnTrainer:
             LOG.info("Compiling model...")
             self.unoptimized_model = self.model
             self.model = torch.compile(self.model)
-            
-        # Wrap in DDP if needed
-        if self.ddp:
-            self.model = DDP(self.model, device_ids=[self.local_rank])
-            
+
+        # # Wrap in DDP if needed
+        # if self.ddp:
+        #     self.model = DDP(self.model, device_ids=[self.local_rank])
+
     def get_batch(self, split: str):
         """Load a batch of data."""
-        data_path = self.config.train_data_path if split == "train" else self.config.eval_data_path
+        data_path = (
+            self.config.train_data_path
+            if split == "train"
+            else self.config.eval_data_path
+        )
         data = np.memmap(data_path, dtype=np.uint16, mode="r")
-        
-        ix = torch.randint(len(data) - self.config.max_seq_len, (self.config.train_batch_size,))
-        x = [torch.from_numpy((data[i:i + self.config.max_seq_len]).astype(np.int64)) for i in ix]
-        y = [torch.from_numpy((data[i + 1:i + 1 + self.config.max_seq_len]).astype(np.int64)) for i in ix]
-        
+
+        ix = torch.randint(
+            len(data) - self.config.max_seq_len, (self.config.train_batch_size,)
+        )
+        x = [
+            torch.from_numpy((data[i : i + self.config.max_seq_len]).astype(np.int64))
+            for i in ix
+        ]
+        y = [
+            torch.from_numpy(
+                (data[i + 1 : i + 1 + self.config.max_seq_len]).astype(np.int64)
+            )
+            for i in ix
+        ]
+
         # Apply label processing
         y = [process_labels_optimized(sample.clone(), MASK) for sample in y]
-        
+
         x = torch.stack(x)
         y = torch.stack(y)
-        
+
         # Debug: Check for invalid tokens in raw data
         if x.max() >= self.config.vocab_size:
-            LOG.error(f"Invalid input tokens in batch! Max: {x.max()}, vocab_size: {self.config.vocab_size}")
+            LOG.error(
+                f"Invalid input tokens in batch! Max: {x.max()}, vocab_size: {self.config.vocab_size}"
+            )
             LOG.error(f"Invalid x values: {x[x >= self.config.vocab_size]}")
-            
+
         if y.max() >= self.config.vocab_size:
-            LOG.error(f"Invalid target tokens in batch! Max: {y.max()}, vocab_size: {self.config.vocab_size}")
+            LOG.error(
+                f"Invalid target tokens in batch! Max: {y.max()}, vocab_size: {self.config.vocab_size}"
+            )
             LOG.error(f"Invalid y values: {y[y >= self.config.vocab_size]}")
-        
+
         if self.device_type == "cuda":
             x = x.pin_memory().to(self.config.device, non_blocking=True)
             y = y.pin_memory().to(self.config.device, non_blocking=True)
@@ -962,76 +1083,79 @@ class SabiYarnTrainer:
             x = x.to(self.config.device)
             y = y.to(self.config.device)
 
-        non_masked_tokens =  self.count_non_masked_tokens(y, MASK)
-        
+        non_masked_tokens = self.count_non_masked_tokens(y, MASK)
+
         if non_masked_tokens <= 10:
             LOG.info(f"Number of Non-Masked Tokens: {non_masked_tokens}")
         if torch.isnan(y).any():
             LOG.info("Nan values detected in labels")
-            
+
         return x, y
-        
+
     def prepare_attention_mask(self, tokens: torch.Tensor):
         """Prepare attention mask with optional custom causal masking."""
         batch_size, seq_len = tokens.shape
-        
+
         # Create standard causal mask
         mask = torch.tril(torch.ones(seq_len, seq_len, device=tokens.device))
         mask = mask.view(1, 1, seq_len, seq_len).repeat(batch_size, 1, 1, 1)
         # Apply custom causal masking if enabled
         if self.config.use_custom_causal_mask:
             mask = create_causal_mask_optimized(
-                tokens, 
-                mask, 
-                id_val=self.config.mask_id_value
+                tokens, mask, id_val=self.config.mask_id_value
             )
         # print("mask shape: ", mask.shape)
-        
+
         return mask
-        
+
     def compute_loss(self, tokens: torch.Tensor, targets: torch.Tensor):
         """Compute loss with support for different loss functions and multi-token prediction."""
-        
+
         # Prepare attention mask
         mask = self.prepare_attention_mask(tokens)
-        
+        raw_model_obj = self.model.module if isinstance(self.model, DDP) else self.model
+
         # Forward pass
-        if self.model.use_multi_token:
+        if raw_model_obj.use_multi_token:
             hidden_states, logits, multi_token_logits = self.model(
                 tokens, start_pos=0, mask=mask, return_multi_token=True
             )
-            
+
             # When MTP is enabled, use ONLY MTP loss to train both main model and MTP modules
             from sabiyarn.multi_token_loss import MultiTokenLoss
-            
+
             mtp_loss_fn = MultiTokenLoss(
                 num_prediction_tokens=self.config.num_prediction_tokens,
                 mtp_loss_weight=self.config.mtp_loss_weight,
-                use_cut_cross_entropy=self.config.use_cut_cross_entropy
+                use_cut_cross_entropy=self.config.use_cut_cross_entropy,
             )
-            
+
             # Create extended targets for MTP
-            extended_targets = F.pad(targets, (0, self.config.num_prediction_tokens), value=-100)
-            
+            extended_targets = F.pad(
+                targets, (0, self.config.num_prediction_tokens), value=-100
+            )
+
             try:
                 # Get MTP hidden states and output heads for Cut Cross Entropy
-                raw_model = self.model.module if self.ddp else self.model
                 mtp_hidden_states = None
                 mtp_output_heads = None
-                
-                if hasattr(raw_model, 'multi_token_predictor') and raw_model.multi_token_predictor is not None:
+
+                if (
+                    hasattr(raw_model_obj, "multi_token_predictor")
+                    and raw_model_obj.multi_token_predictor is not None
+                ):
                     # Get the final hidden states from MTP module
-                    mtp_module = raw_model.multi_token_predictor
-                    if hasattr(mtp_module, 'output_norm'):
+                    mtp_module = raw_model_obj.multi_token_predictor
+                    if hasattr(mtp_module, "output_norm"):
 
                         pass
                     mtp_output_heads = mtp_module.output_heads
-                
+
                 total_loss = mtp_loss_fn(
-                    multi_token_logits, 
+                    multi_token_logits,
                     extended_targets,
                     mtp_hidden_states=mtp_hidden_states,
-                    mtp_output_heads=mtp_output_heads
+                    mtp_output_heads=mtp_output_heads,
                 )
             except Exception as e:
                 LOG.warning(f"MTP loss computation failed: {e}")
@@ -1039,7 +1163,7 @@ class SabiYarnTrainer:
                 if self.config.use_cut_cross_entropy:
                     total_loss = linear_cross_entropy(
                         hidden_states,
-                        raw_model.lm_head.weight,
+                        raw_model_obj.lm_head.weight,
                         targets,
                         shift=False,
                         ignore_index=MASK,
@@ -1049,18 +1173,17 @@ class SabiYarnTrainer:
                     total_loss = F.cross_entropy(
                         logits.view(-1, logits.size(-1)),
                         targets.view(-1),
-                        ignore_index=MASK
+                        ignore_index=MASK,
                     )
-            return total_loss, hidden_states             
+            return total_loss, hidden_states
         else:
             # Standard training without MTP
             hidden_states, logits, _ = self.model(tokens, start_pos=0, mask=mask)
-            
+
             if self.config.use_cut_cross_entropy:
-                raw_model = self.model.module if self.ddp else self.model
                 total_loss = linear_cross_entropy(
                     hidden_states,
-                    raw_model.lm_head.weight,
+                    raw_model_obj.lm_head.weight,
                     targets,
                     shift=False,
                     ignore_index=MASK,
@@ -1070,80 +1193,88 @@ class SabiYarnTrainer:
                 total_loss = F.cross_entropy(
                     logits.view(-1, logits.size(-1)),
                     targets.view(-1),
-                    ignore_index=MASK
+                    ignore_index=MASK,
                 )
-                
+
         return total_loss, logits
-        
+
     @torch.no_grad()
     def estimate_loss(self):
         """Estimate loss on train and validation sets."""
         out = {}
         self.model.eval()
-        
+
         for split in ["train", "val"]:
             losses = torch.zeros(self.config.eval_iters)
-            
+
             for k in range(self.config.eval_iters):
                 X, Y = self.get_batch(split)
-                
+
                 with self.ctx:
                     loss, _ = self.compute_loss(X, Y)
                     losses[k] = loss.item()
-                    
+
             out[split] = losses.mean()
-            
+
         self.model.train()
         return out
-        
+
     def get_lr(self, it: int) -> float:
         """Learning rate schedule with warmup and cosine decay."""
         if it < self.config.warmup_iters:
             return self.config.learning_rate * it / self.config.warmup_iters
         if it > self.config.lr_decay_iters:
             return self.config.min_lr
-            
-        decay_ratio = (it - self.config.warmup_iters) / (self.config.lr_decay_iters - self.config.warmup_iters)
+
+        decay_ratio = (it - self.config.warmup_iters) / (
+            self.config.lr_decay_iters - self.config.warmup_iters
+        )
         assert 0 <= decay_ratio <= 1
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
-        return self.config.min_lr + coeff * (self.config.learning_rate - self.config.min_lr)
-        
-    def generate_sample_text(self, tokens: torch.Tensor):
-            """Generate sample text for monitoring training progress."""
-            if self.tokenizer is None:
-                return
-            for i in range(min(8, len(tokens))):    
-                try:
-                    with torch.no_grad():
-                        generated = self.model.generate(
-                            tokens[i].unsqueeze(0),  # Use first sample
-                            max_new_tokens=self.config.generation_max_tokens,
-                            use_multi_token=self.model.use_multi_token
-                        )
-                        
-                    input_text = self.tokenizer.decode(tokens[0].tolist(), skip_special_tokens=False)
-                    output_text = self.tokenizer.decode(generated[0].tolist(), skip_special_tokens=False)
-                    
-                    LOG.info("=" * 100)
-                    LOG.info(f"Input: {input_text[-500:]}")
-                    LOG.info(f"Generated: {output_text[len(input_text):]}")
-                    LOG.info("=" * 100)
+        return self.config.min_lr + coeff * (
+            self.config.learning_rate - self.config.min_lr
+        )
 
-                except Exception as e:
-                    LOG.warning(f"Text generation failed: {e}")
-                finally:
-                    continue
-                    
-            self.model.train()
-        
+    def generate_sample_text(self, tokens: torch.Tensor):
+        """Generate sample text for monitoring training progress."""
+        raw_model = self.model.module if isinstance(self.model, DDP) else self.model
+        if self.tokenizer is None:
+            return
+        for i in range(min(8, len(tokens))):
+            try:
+                with torch.no_grad():
+                    generated = raw_model.generate(
+                        tokens[i].unsqueeze(0),  # Use first sample
+                        max_new_tokens=self.config.generation_max_tokens,
+                        use_multi_token=raw_model.use_multi_token,
+                    )
+
+                input_text = self.tokenizer.decode(
+                    tokens[0].tolist(), skip_special_tokens=False
+                )
+                output_text = self.tokenizer.decode(
+                    generated[0].tolist(), skip_special_tokens=False
+                )
+
+                LOG.info("=" * 100)
+                LOG.info(f"Input: {input_text[-500:]}")
+                LOG.info(f"Generated: {output_text[len(input_text):]}")
+                LOG.info("=" * 100)
+
+            except Exception as e:
+                LOG.warning(f"Text generation failed: {e}")
+            finally:
+                continue
+
+        self.model.train()
 
     def save_checkpoint_wandb(self):
-        """ Save training checkpoint to wandb."""
+        """Save training checkpoint to wandb."""
 
         if not self.master_process:
             return
-        
-        raw_model = self.model.module if self.ddp else self.model
+
+        raw_model = self.model.module if self.dist else self.model
         checkpoint = {
             "model": raw_model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
@@ -1152,14 +1283,15 @@ class SabiYarnTrainer:
             "best_val_loss": self.best_val_loss,
             "config": self.config.__dict__,
             "transformers version": transformers.__version__,
-            "pytorch version": torch.__version__
+            "pytorch version": torch.__version__,
         }
         os.makedirs(self.run_dir, exist_ok=True)
         # Update a rolling 'ckpt.pt' and also an iter-stamped file for history
         ckpt_latest = os.path.join(self.run_dir, "ckpt.pt")
         ckpt_iter = os.path.join(self.run_dir, f"ckpt_{self.iter_num:07d}.pt")
         torch.save(checkpoint, ckpt_latest)
-        self.volume.commit()
+        if self.volume:
+            self.volume.commit()
         LOG.info(f"Checkpoint saved to {ckpt_latest}")
         # torch.save(checkpoint, ckpt_iter)
 
@@ -1169,7 +1301,10 @@ class SabiYarnTrainer:
         except Exception:
             pass
         # Save MTP modules separately if available
-        if hasattr(raw_model, 'multi_token_predictor') and raw_model.multi_token_predictor is not None:
+        if (
+            hasattr(raw_model, "multi_token_predictor")
+            and raw_model.multi_token_predictor is not None
+        ):
             mtp_checkpoint = {
                 "mtp_state_dict": raw_model.multi_token_predictor.state_dict(),
                 "model_args": raw_model.params,
@@ -1177,39 +1312,43 @@ class SabiYarnTrainer:
                 "best_val_loss": self.best_val_loss,
                 "config": self.config.__dict__,
             }
-            
+
             mtp_ckpt_path = os.path.join(self.run_dir, "mtp_ckpt.pt")
             torch.save(mtp_checkpoint, mtp_ckpt_path)
             LOG.info(f"MTP module checkpoint saved to {mtp_ckpt_path}")
-            
+
             # Also save individual MTP components for fine-grained control
             mtp_components = {}
             mtp_module = raw_model.multi_token_predictor
-            
-            if hasattr(mtp_module, 'mtp_transformer_block'):
-                mtp_components['transformer_block'] = mtp_module.mtp_transformer_block.state_dict()
-                
-            if hasattr(mtp_module, 'output_heads') and mtp_module.output_heads is not None:
-                mtp_components['output_heads'] = mtp_module.output_heads.state_dict()
-                
-            if hasattr(mtp_module, 'projection'):
-                mtp_components['projection'] = mtp_module.projection.state_dict()
-                
+
+            if hasattr(mtp_module, "mtp_transformer_block"):
+                mtp_components["transformer_block"] = (
+                    mtp_module.mtp_transformer_block.state_dict()
+                )
+
+            if (
+                hasattr(mtp_module, "output_heads")
+                and mtp_module.output_heads is not None
+            ):
+                mtp_components["output_heads"] = mtp_module.output_heads.state_dict()
+
+            if hasattr(mtp_module, "projection"):
+                mtp_components["projection"] = mtp_module.projection.state_dict()
+
             if mtp_components:
                 mtp_components_path = os.path.join(self.run_dir, "mtp_components.pt")
                 torch.save(mtp_components, mtp_components_path)
                 LOG.info(f"MTP components saved to {mtp_components_path}")
-        
+
         if self.config.save_model_to_wandb:
             artifact = wandb.Artifact(
-                    name= self.config.wandb_run_name, # artifact name
-                    type="model",              # artifact type
-                    description=f"Model checkpoints for {self.config.wandb_run_name}_{torch.__version__}_{transformers.__version__}"
-                    )
+                name=self.config.wandb_run_name,  # artifact name
+                type="model",  # artifact type
+                description=f"Model checkpoints for {self.config.wandb_run_name}_{torch.__version__}_{transformers.__version__}",
+            )
             artifact.add_file(ckpt_latest)
             # Log the artifact to W&B
             wandb.log_artifact(artifact)
-    
 
     def setup_output_dirs(self):
         """Create and register a unique run directory under out_dir and write metadata/pointers.
@@ -1239,9 +1378,13 @@ class SabiYarnTrainer:
                         run_dir = None
                 if run_dir is None:
                     # Pick most recent directory under out_dir
-                    subdirs = [d.path for d in os.scandir(self.config.out_dir) if d.is_dir()]
+                    subdirs = [
+                        d.path for d in os.scandir(self.config.out_dir) if d.is_dir()
+                    ]
                     if not subdirs:
-                        raise FileNotFoundError(f"No run directories found in {self.config.out_dir} to resume from")
+                        raise FileNotFoundError(
+                            f"No run directories found in {self.config.out_dir} to resume from"
+                        )
                     run_dir = max(subdirs, key=lambda p: os.path.getmtime(p))
                 self.run_dir = run_dir
         else:
@@ -1251,7 +1394,9 @@ class SabiYarnTrainer:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 attn = self.config.attention_type
                 moe_tag = "moe" if self.config.use_moe else "dense"
-                suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+                suffix = "".join(
+                    random.choices(string.ascii_lowercase + string.digits, k=6)
+                )
                 dir_name = f"{timestamp}_{attn}_{self.config.dim}d_{self.config.n_layers}L_{self.config.layer_sharing_strategy}_{self.config.n_heads}H_{moe_tag}_{suffix}"
                 self.run_dir = os.path.join(self.config.out_dir, dir_name)
             os.makedirs(self.run_dir, exist_ok=True)
@@ -1264,18 +1409,26 @@ class SabiYarnTrainer:
             try:
                 with open(os.path.join(self.run_dir, "metadata.json"), "w") as fp:
                     json.dump(metadata, fp, indent=2)
-                with open(os.path.join(self.config.out_dir, "LATEST_RUN.txt"), "w") as fp:
+                with open(
+                    os.path.join(self.config.out_dir, "LATEST_RUN.txt"), "w"
+                ) as fp:
                     fp.write(self.run_dir)
             except Exception:
                 pass
-        
 
-    def monitor_and_control_gradients(self, model, optimizer, step, old_lr,
-                                  clip_value=1e2, tiny_value=1e-8,
-                                  lr_decay_factor=0.5):
+    def monitor_and_control_gradients(
+        self,
+        model,
+        optimizer,
+        step,
+        old_lr,
+        clip_value=1e2,
+        tiny_value=1e-8,
+        lr_decay_factor=0.5,
+    ):
         """
         Monitors gradients and takes action if exploding/vanishing gradients are detected.
-    
+
         Args:
             model: torch.nn.Module
             optimizer: torch.optim.Optimizer
@@ -1287,7 +1440,7 @@ class SabiYarnTrainer:
         """
         exploding_detected = False
         vanishing_detected = False
-        
+
         grad_report = []
         for name, param in model.named_parameters():
             if param.grad is None:
@@ -1297,38 +1450,44 @@ class SabiYarnTrainer:
             grad_max = param.grad.data.max().item()
             grad_mean = param.grad.data.mean().item()
             grad_abs_mean = param.grad.data.abs().mean().item()
-    
+
             grad_report.append((name, grad_min, grad_max, grad_mean, grad_abs_mean))
-    
+
             # Exploding gradient detection
             if abs(grad_min) > clip_value or abs(grad_max) > clip_value:
-                LOG.info(f"[Step {step}] ⚠️ Exploding gradient in `{name}` "
-                      f"(min={grad_min:.2e}, max={grad_max:.2e})")
+                LOG.info(
+                    f"[Step {step}] ⚠️ Exploding gradient in `{name}` "
+                    f"(min={grad_min:.2e}, max={grad_max:.2e})"
+                )
                 exploding_detected = True
-    
+
             # Vanishing gradient detection
             if grad_abs_mean < tiny_value:
-                LOG.info(f"[Step {step}] ⚠️ Vanishing gradient in `{name}` "
-                      f"(abs mean={grad_abs_mean:.2e}), (min={grad_min:.2e})")
+                LOG.info(
+                    f"[Step {step}] ⚠️ Vanishing gradient in `{name}` "
+                    f"(abs mean={grad_abs_mean:.2e}), (min={grad_min:.2e})"
+                )
                 vanishing_detected = True
 
         # Summary statistics for whole model
         global_min = min([g[1] for g in grad_report], default=0)
         global_max = max([g[2] for g in grad_report], default=0)
         # print(f"[Step {step}] Gradient summary: min={global_min:.4e}, max={global_max:.4e}")
-        
+
         # Reduce LR if exploding gradients
-        if exploding_detected:            
+        if exploding_detected:
             for pg in optimizer.param_groups:
                 new_lr = max(old_lr * lr_decay_factor, 1e-5)  # don’t let it hit zero
-                pg['lr'] = new_lr
-                LOG.info(f"[Step {step}] 🚨 Learning rate reduced from {old_lr:.3e} to {new_lr:.3e}")
+                pg["lr"] = new_lr
+                LOG.info(
+                    f"[Step {step}] 🚨 Learning rate reduced from {old_lr:.3e} to {new_lr:.3e}"
+                )
             self.lr_manually_reduced = True
             return new_lr
-               
-        return old_lr #exploding_detected, vanishing_detected
 
-    def safe_optimizer_step(self): #, exploding_detected: bool = False):
+        return old_lr  # exploding_detected, vanishing_detected
+
+    def safe_optimizer_step(self):  # , exploding_detected: bool = False):
         """
         Performs a safe optimizer step with AMP scaling and gradient clipping.
         """
@@ -1338,39 +1497,46 @@ class SabiYarnTrainer:
         #     self.scaler.update()
         #     self.optimizer.zero_grad(set_to_none=True)
         #     return
-    
+
         # Unscale gradients before clipping
         if self.config.grad_clip != 0.0:
             self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
-    
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(), self.config.grad_clip
+            )
+
         # Normal optimizer step
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.optimizer.zero_grad(set_to_none=True)
         return
 
-        
     def train(self):
         """Main training loop."""
         LOG.info("Starting training...")
-        
+
         X, Y = self.get_batch("train")
         t0 = time.time()
-        
+
         while True:
             # Update learning rate
             if not self.lr_manually_reduced:
-                lr = self.get_lr(self.iter_num) if self.config.decay_lr else self.config.learning_rate
+                lr = (
+                    self.get_lr(self.iter_num)
+                    if self.config.decay_lr
+                    else self.config.learning_rate
+                )
                 for param_group in self.optimizer.param_groups:
                     param_group["lr"] = lr
-                self.lr_manually_reduce= False
-                
+                self.lr_manually_reduce = False
+
             # Evaluation and checkpointing
             if self.iter_num % self.config.eval_interval == 0 and self.master_process:
                 losses = self.estimate_loss()
-                LOG.info(f"Step {self.iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-                
+                LOG.info(
+                    f"Step {self.iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}"
+                )
+
                 if self.config.wandb_log:
                     eval_metrics = {
                         "iter": self.iter_num,
@@ -1379,24 +1545,28 @@ class SabiYarnTrainer:
                         "train/lr": lr,
                         "perf/mfu_percent": self.running_mfu * 100,
                     }
-                    
+
                     # Add system metrics during evaluation
                     if self.config.log_system_metrics:
                         eval_metrics.update(self.get_system_metrics())
-                    
+
                     wandb.log(eval_metrics, step=self.iter_num)
-                    
-                if losses["val"] < self.best_val_loss or self.config.always_save_checkpoint:
-         
+
+                if (
+                    losses["val"] < self.best_val_loss
+                    or self.config.always_save_checkpoint
+                ):
+
                     self.best_val_loss = losses["val"]
                     if self.iter_num > 0:
                         # self.save_checkpoint()
                         self.save_checkpoint_wandb()
-                        self.volume.commit()
-                        
+                        if self.volume:
+                            self.volume.commit()
+
             if self.iter_num == 0 and self.config.eval_only:
                 break
-                
+
             # Generate sample text occasionally
             if (
                 self.config.enable_generation_during_training
@@ -1406,65 +1576,164 @@ class SabiYarnTrainer:
             ):
                 self.generate_sample_text(X)
 
-           
             # Training step with gradient accumulation
             for micro_step in range(self.config.gradient_accumulation_steps):
-                if self.ddp:
+                if self.dist:
                     self.model.require_backward_grad_sync = (
                         micro_step == self.config.gradient_accumulation_steps - 1
                     )
-                    
+
                 with self.ctx:
                     loss, _ = self.compute_loss(X, Y)
                     # LOG.info(f"batch loss: {loss:.2f}")
                     loss = loss / self.config.gradient_accumulation_steps
-                    
+
                 # Get next batch while GPU is busy
                 X, Y = self.get_batch("train")
-                
+
                 # Backward pass
                 self.scaler.scale(loss).backward()
-                lr = self.monitor_and_control_gradients(self.model, self.optimizer, self.iter_num, lr, clip_value=1e2, tiny_value=1e-8, lr_decay_factor=0.5)
-                
+                lr = self.monitor_and_control_gradients(
+                    self.model,
+                    self.optimizer,
+                    self.iter_num,
+                    lr,
+                    clip_value=1e2,
+                    tiny_value=1e-8,
+                    lr_decay_factor=0.5,
+                )
+
             # Gradient clipping and optimizer step
             self.safe_optimizer_step()
-            
+
             # if self.config.grad_clip != 0.0:
             #     self.scaler.unscale_(self.optimizer)
             #     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
-                
+
             # self.scaler.step(self.optimizer)
             # self.scaler.update()
             # self.optimizer.zero_grad(set_to_none=True)
-            
+
             # Timing and logging
             t1 = time.time()
             dt = t1 - t0
             t0 = t1
-            
+
             if self.iter_num % self.config.log_interval == 0 and self.master_process:
                 lossf = loss.item() * self.config.gradient_accumulation_steps
-                LOG.info(f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, learning rate {lr}")
-                
+                LOG.info(
+                    f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, learning rate {lr}"
+                )
+
                 # Log advanced metrics
-                self.log_advanced_metrics(loss* self.config.gradient_accumulation_steps, self.model, self.optimizer)
-                
+                self.log_advanced_metrics(
+                    loss * self.config.gradient_accumulation_steps,
+                    self.model,
+                    self.optimizer,
+                )
+
             self.iter_num += 1
             self.local_iter_num += 1
-            
+
             # Termination condition
-            if (self.iter_num > self.config.max_iters) or (self.iter_num >= self.iter_training_limit):
+            if (self.iter_num > self.config.max_iters) or (
+                self.iter_num >= self.iter_training_limit
+            ):
                 break
-                
-        if self.ddp:
-            destroy_process_group()
-            
+
+        if self.config.dist:
+            dist.destroy_process_group()
+
         LOG.info("Training completed!")
 
 
 def main():
     """Main entry point."""
-    config = TrainingConfig()
+    import yaml
+
+    CONFIG_PATH = "/app/training/train_config.yaml"
+    with open(CONFIG_PATH, "r") as f:
+        conf = yaml.safe_load(f)
+    config = TrainingConfig(
+        # Model Architecture
+        attention_type=AttentionType(conf["model"]["attention_type"]),
+        dim=conf["model"]["dim"],
+        n_layers=conf["model"]["n_layers"],
+        n_heads=conf["model"]["n_heads"],
+        n_kv_heads=conf["model"]["n_kv_heads"],
+        vocab_size=conf["model"]["vocab_size"],
+        max_seq_len=conf["model"]["max_seq_len"],
+        max_batch_size=conf["training"]["max_batch_size"],
+        tie_weights=conf["model"]["tie_weights"],
+        # MoE Configuration
+        use_moe=conf["model"]["use_moe"],
+        n_routed_experts=conf["model"]["n_routed_experts"],
+        n_activated_experts=conf["model"]["n_activated_experts"],
+        moe_inter_dim=conf["model"]["moe_inter_dim"],
+        n_shared_experts=conf["model"]["n_shared_experts"],
+        score_function=conf["model"]["score_function"],
+        bias_update_speed=conf["model"]["bias_update_speed"],
+        moe_aux_loss_weight=conf["model"]["moe_aux_loss_weight"],
+        # Multi-Token Prediction
+        use_multi_token_prediction=conf["model"]["use_multi_token_prediction"],
+        num_prediction_tokens=conf["model"]["num_prediction_tokens"],
+        mtp_only_training=conf["model"]["mtp_only_training"],
+        # Layer Sharing
+        layer_sharing=conf["model"]["layer_sharing"],
+        layer_sharing_strategy=conf["model"]["layer_sharing_strategy"],
+        n_unique_layers=conf["model"]["n_unique_layers"],
+        # CCE
+        use_cut_cross_entropy=conf["model"]["use_cut_cross_entropy"],
+        # Training Configuration
+        train_batch_size=conf["training"]["train_batch_size"],
+        gradient_accumulation_steps=conf["training"]["gradient_accumulation_steps"],
+        learning_rate=conf["training"]["learning_rate"],
+        max_iters=conf["training"]["max_iters"],
+        weight_decay=conf["training"]["weight_decay"],
+        warmup_iters=conf["training"]["warmup_iters"],
+        lr_decay_iters=conf["training"]["lr_decay_iters"],
+        grad_clip=conf["training"]["grad_clip"],
+        optimizer_type=conf["training"]["optimizer_type"],
+        # Data paths (Modal persistent volume)
+        dataset=conf["data"]["datasets"],
+        train_data_path=conf["data"]["train_data_path"],
+        eval_data_path=conf["data"]["eval_data_path"],
+        out_dir=conf["data"]["out_dir"],
+        eval_interval=conf["wandb"]["eval_interval"],
+        log_interval=conf["wandb"]["log_interval"],
+        # run_dir=conf['wandb']['run_dir'],
+        # W&B Configuration
+        wandb_log=conf["wandb"]["log"],
+        wandb_project=conf["wandb"]["project"],
+        wandb_run_name=conf["wandb"]["wandb_run_name"],
+        wandb_tags=["Modal", "GPU", conf["model"]["attention_type"], "SabiYarn"],
+        # Enhanced monitoring for Modal
+        log_grad_norm=conf["training"]["log_grad_norm"],
+        log_weights=True,
+        log_system_metrics=True,
+        log_moe_metrics=True,
+        monitor_interval=50,
+        init_from=conf["training"]["init_from"],
+        # System
+        device=conf["training"]["device"],
+        dtype=conf["training"]["dtype"],
+        compile_model=conf["training"]["compile_model"],  # Disable for debugging
+        # Generation during training
+        enable_generation_during_training=conf["training"][
+            "enable_generation_during_training"
+        ],
+        # hashing registry for data deduplication
+        hash_algo=conf["hash"]["hash_algo"],
+        registry_cache=conf["hash"]["registry_cache"],
+        map_size_gb=conf["hash"]["map_size_gb"],
+        overwrite_data=conf["data"][
+            "overwrite_data"
+        ],  # overwrite train.bin and val.bin if they exist
+        use_custom_causal_mask=conf["training"]["use_custom_causal_mask"],
+        dist=conf["distributed"]["dist"],
+        dist_strategy=conf["distributed"]["dist_strategy"],
+        world_size=conf["distributed"]["world_size"],
+    )
     trainer = SabiYarnTrainer(config)
     trainer.train()
 

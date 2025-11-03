@@ -8,6 +8,7 @@ from typing import Optional
 from dataclasses import dataclass
 from .utils import apply_rotary_emb
 
+
 @dataclass
 class SelfAttnArgs:
     dim: int = 4096
@@ -16,7 +17,8 @@ class SelfAttnArgs:
     max_seq_len: int = 2048
     use_kv_cache: bool = True
     bias: bool = False
-    dropout: bool= 0.1
+    dropout: bool = 0.1
+
 
 class CausalSelfAttention(nn.Module):
 
@@ -34,83 +36,109 @@ class CausalSelfAttention(nn.Module):
         self.n_embd = config.dim
         self.dropout = config.dropout
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        self.flash = hasattr(torch.nn.functional, "scaled_dot_product_attention")
         if not self.flash:
-            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
+            print(
+                "WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0"
+            )
             # causal mask to ensure that attention is only applied to the left in the input sequence
-            self.register_buffer("mask", torch.tril(torch.ones(config.max_seq_len, config.max_seq_len))
-                                        .view(1, 1, config.max_seq_len, config.max_seq_len))
-        
-        self.use_kv_cache = config.use_kv_cache  
+            self.register_buffer(
+                "mask",
+                torch.tril(torch.ones(config.max_seq_len, config.max_seq_len)).view(
+                    1, 1, config.max_seq_len, config.max_seq_len
+                ),
+            )
+
+        self.use_kv_cache = config.use_kv_cache
         if self.use_kv_cache:
             self.cache_k = torch.zeros(
-            (
-                config.max_batch_size,
-                self.n_head,
-                config.max_seq_len,
-                config.dim // config.n_heads
+                (
+                    config.max_batch_size,
+                    self.n_head,
+                    config.max_seq_len,
+                    config.dim // config.n_heads,
+                )
             )
-            )
-            
+
             self.cache_v = torch.zeros(
-            (
-                config.max_batch_size,
-                self.n_head,
-                config.max_seq_len,                
-                config.dim // config.n_heads
+                (
+                    config.max_batch_size,
+                    self.n_head,
+                    config.max_seq_len,
+                    config.dim // config.n_heads,
+                )
             )
-        )
 
-
-    def forward(self, x: torch.Tensor, 
-                    start_pos:int,
-                    freqs_cis: torch.Tensor, 
-                    mask:Optional[torch.Tensor]= None)-> torch.Tensor:
-        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+    def forward(
+        self,
+        x: torch.Tensor,
+        start_pos: int,
+        freqs_cis: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        B, T, C = (
+            x.size()
+        )  # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-        q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
+        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
         k = k.view(B, T, self.n_head, C // self.n_head)
         q = q.view(B, T, self.n_head, C // self.n_head)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
 
-        #apply rotary embeddings
+        # apply rotary embeddings
         q, k = apply_rotary_emb(q, k, freqs_cis)
-        q = q.transpose(1, 2) # (B, nh, T, hs)
-        k= k.transpose(1, 2) # (B, nh, T, hs)
-        
+        q = q.transpose(1, 2)  # (B, nh, T, hs)
+        k = k.transpose(1, 2)  # (B, nh, T, hs)
+
         if self.use_kv_cache and not self.training:
             self.cache_k = self.cache_k.to(q)
             self.cache_v = self.cache_v.to(q)
 
-            self.cache_k[:B, :, start_pos: start_pos + T] = k
-            self.cache_v[:B,:, start_pos: start_pos + T] = v
+            self.cache_k[:B, :, start_pos : start_pos + T] = k
+            self.cache_v[:B, :, start_pos : start_pos + T] = v
 
-            k = self.cache_k[:B, :, :start_pos + T]
-            v = self.cache_v[:B, :, :start_pos + T]
-        
+            k = self.cache_k[:B, :, : start_pos + T]
+            v = self.cache_v[:B, :, : start_pos + T]
+
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
             if mask is not None:
-                y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=self.dropout if self.training else 0)
+                y = torch.nn.functional.scaled_dot_product_attention(
+                    q,
+                    k,
+                    v,
+                    attn_mask=mask,
+                    dropout_p=self.dropout if self.training else 0,
+                )
             else:
-                y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
-                
+                y = torch.nn.functional.scaled_dot_product_attention(
+                    q,
+                    k,
+                    v,
+                    attn_mask=None,
+                    dropout_p=self.dropout if self.training else 0,
+                    is_causal=True,
+                )
+
         else:
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             mask = mask or self.mask
-            att = att.masked_fill(mask[:,:,:T,:T] == 0, float('-inf'))
+            att = att.masked_fill(mask[:, :, :T, :T] == 0, float("-inf"))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
-            y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+            y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        y = (
+            y.transpose(1, 2).contiguous().view(B, T, C)
+        )  # re-assemble all head outputs side by side
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
         return y
-
 
 
 # class GQA(nn.Module):
@@ -238,7 +266,7 @@ class CausalSelfAttention(nn.Module):
 #             # Apply causal masking
 #             seq_len = scores.size(-1)
 #             causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=scores.device), diagonal=1)
-#             scores = scores.masked_fill(causal_mask.bool(), float('-inf'))      
+#             scores = scores.masked_fill(causal_mask.bool(), float('-inf'))
 #         scores = F.softmax(scores.float(), dim=-1).type_as(xq)
 #         output = torch.matmul(scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
 #         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)

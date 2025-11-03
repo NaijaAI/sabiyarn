@@ -12,25 +12,35 @@ import modal
 # Create Modal app with same image as training
 image = (
     modal.Image.debian_slim(python_version="3.10")
-    .pip_install([
-        "torch>=2.0.0",
-        "transformers",
-        "numpy",
-        "structlog",
-    ])
+    .pip_install(
+        [
+            "torch>=2.0.0",
+            "transformers",
+            "numpy",
+            "structlog",
+        ]
+    )
     .pip_install_from_requirements("requirements.txt")
-    .add_local_dir(".", remote_path="/app", ignore=[
-        ".git", "*.pyc", "__pycache__", ".pytest_cache", "*.egg-info", 
-        "out/", "*.bin", ".env"
-    ])
+    .add_local_dir(
+        ".",
+        remote_path="/app",
+        ignore=[
+            ".git",
+            "*.pyc",
+            "__pycache__",
+            ".pytest_cache",
+            "*.egg-info",
+            "out/",
+            "*.bin",
+            ".env",
+        ],
+    )
 )
 
 app = modal.App("sabiyarn-generation-test")
 
 # Same volume as training
 volume = modal.Volume.from_name("sabiyarn-data", create_if_missing=True)
-
-
 
 
 @app.function(
@@ -40,7 +50,6 @@ volume = modal.Volume.from_name("sabiyarn-data", create_if_missing=True)
     volumes={"/data": volume},
     secrets=[modal.Secret.from_name("hf-secret")],
 )
-
 def test_generation(
     prompts=None,
     max_new_tokens: int = 128,
@@ -64,7 +73,9 @@ def test_generation(
     cache_root = "/data/hf_cache"
     os.environ.setdefault("HF_HOME", cache_root)
     os.environ.setdefault("HF_DATASETS_CACHE", os.path.join(cache_root, "datasets"))
-    os.environ.setdefault("TRANSFORMERS_CACHE", os.path.join(cache_root, "transformers"))
+    os.environ.setdefault(
+        "TRANSFORMERS_CACHE", os.path.join(cache_root, "transformers")
+    )
     os.makedirs(os.environ["HF_HOME"], exist_ok=True)
     os.makedirs(os.environ["HF_DATASETS_CACHE"], exist_ok=True)
     os.makedirs(os.environ["TRANSFORMERS_CACHE"], exist_ok=True)
@@ -95,12 +106,16 @@ def test_generation(
     ckpt_path = os.path.join(resolved_run_dir, "ckpt.pt") if resolved_run_dir else None
     if not ckpt_path or not os.path.exists(ckpt_path):
         # Final fallback: pick most recent *.pt anywhere under base
-        all_pts = [p for p in glob(os.path.join(ckpt_base, "**", "*.pt"), recursive=True)]
+        all_pts = [
+            p for p in glob(os.path.join(ckpt_base, "**", "*.pt"), recursive=True)
+        ]
         if not all_pts:
             print(f"❌ No checkpoints found in {ckpt_base}")
             return []
         ckpt_path = max(all_pts, key=lambda p: os.path.getmtime(p))
-        print(f"⚠️ Using most recent checkpoint file by mtime: {ckpt_path}. Consider passing run_dir explicitly.")
+        print(
+            f"⚠️ Using most recent checkpoint file by mtime: {ckpt_path}. Consider passing run_dir explicitly."
+        )
     else:
         print(f"✅ Using run dir: {resolved_run_dir}")
         print(f"✅ Using checkpoint: {ckpt_path}")
@@ -118,15 +133,17 @@ def test_generation(
 
     # Normalize state_dict keys from compiled/DDP models
     raw_state = checkpoint["model"]
-    needs_strip = any(k.startswith("_orig_mod.") or k.startswith("module.") for k in raw_state.keys())
+    needs_strip = any(
+        k.startswith("_orig_mod.") or k.startswith("module.") for k in raw_state.keys()
+    )
     if needs_strip:
         normalized_state = {}
         for k, v in raw_state.items():
             new_k = k
             if new_k.startswith("_orig_mod."):
-                new_k = new_k[len("_orig_mod."):]
+                new_k = new_k[len("_orig_mod.") :]
             if new_k.startswith("module."):
-                new_k = new_k[len("module."):]
+                new_k = new_k[len("module.") :]
             normalized_state[new_k] = v
     else:
         normalized_state = raw_state
@@ -158,7 +175,10 @@ def test_generation(
     tokenizer = AutoTokenizer.from_pretrained("Aletheia-ng/SabiYarn_test")
 
     emb_vocab = int(model.tok_embeddings.weight.size(0))
-    if tokenizer.vocab_size != model_args.vocab_size or emb_vocab != model_args.vocab_size:
+    if (
+        tokenizer.vocab_size != model_args.vocab_size
+        or emb_vocab != model_args.vocab_size
+    ):
         print(
             f"⚠️ Vocab mismatch: tokenizer={tokenizer.vocab_size}, model_args={model_args.vocab_size}, embeddings={emb_vocab}.\n"
             "   Ensure you are using the same tokenizer that was used for training."
@@ -174,7 +194,9 @@ def test_generation(
     outputs = []
     with torch.no_grad():
         for idx, prompt in enumerate(prompts):
-            input_ids = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=False).to(device)
+            input_ids = tokenizer.encode(
+                prompt, return_tensors="pt", add_special_tokens=False
+            ).to(device)
             # Fail fast if any token id exceeds embedding size
             max_id = int(input_ids.max().item())
             if max_id >= emb_vocab:
@@ -192,18 +214,26 @@ def test_generation(
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 top_k=top_k,
-                use_multi_token=use_multi_token and getattr(model, "use_multi_token", False),
+                use_multi_token=use_multi_token
+                and getattr(model, "use_multi_token", False),
             )
 
-            text_full = tokenizer.decode(generated[0].tolist(), skip_special_tokens=True)
-            text_input = tokenizer.decode(input_ids[0].tolist(), skip_special_tokens=True)
+            text_full = tokenizer.decode(
+                generated[0].tolist(), skip_special_tokens=True
+            )
+            text_input = tokenizer.decode(
+                input_ids[0].tolist(), skip_special_tokens=True
+            )
             completion = text_full[len(text_input) :]
 
             # print(f"\nPrompt {idx+1}: {prompt}")
             # print(f"Completion: {completion}")
-            outputs.append({"prompt": prompt, "completion": completion, "full": text_full})
+            outputs.append(
+                {"prompt": prompt, "completion": completion, "full": text_full}
+            )
 
     return outputs
+
 
 @app.local_entrypoint()
 def main():
@@ -213,6 +243,7 @@ def main():
     for r in results:
         print(f"\n=== Prompt ===\n{r['prompt']}\n=== Completion ===\n{r['completion']}")
     return True
+
 
 if __name__ == "__main__":
     main()

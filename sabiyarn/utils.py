@@ -1,6 +1,7 @@
 import torch
 
-def precompute_freqs_cis(dim: int, end:int, theta: float=10000.0):
+
+def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     """
     Precompute the frequency tensor for complex exponentials (cis) with given dimensions.
 
@@ -17,7 +18,7 @@ def precompute_freqs_cis(dim: int, end:int, theta: float=10000.0):
         torch.Tensor: Precomputed frequency tensor with complex exponentials.
     """
 
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2) [: (dim // 2)].float() / dim))
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
     t = torch.arange(end, device=freqs.device)
     freqs = torch.outer(t, freqs).float()
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
@@ -47,16 +48,11 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     assert 0 <= 1 < ndim
     assert freqs_cis.shape == (x.shape[1], x.shape[-1])
 
-    shape = [d if i == 1 or i == ndim-1 else 1 for i, d in enumerate(x.shape)]
+    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
     return freqs_cis.view(*shape)
 
 
-def apply_rotary_emb(
-    xq: torch.Tensor,
-    xk: torch.Tensor,
-    freqs_cis: torch.Tensor
-    ):
-
+def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor):
     """
     Apply rotary embeddings to input tensors using the given frequency tensor.
 
@@ -93,10 +89,7 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     if n_rep == 1:
         return x
     return (
-        x[:,:,:,None, :].expand(
-            bs, slen, n_kv_heads, n_rep, head_dim
-        ).reshape(
-            bs, slen, n_kv_heads*n_rep, head_dim
-        )
+        x[:, :, :, None, :]
+        .expand(bs, slen, n_kv_heads, n_rep, head_dim)
+        .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
     )
-

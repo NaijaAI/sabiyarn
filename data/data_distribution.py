@@ -679,9 +679,10 @@ def prepare_env(vol=output_vol):
                 }
                 json.dump(stats, f)
 
-        with open(PROCESSED_LOG, "a+") as proc_log, open(
-            LANG_UNKNOWN_LOG, "a+"
-        ) as lang_log:
+        with (
+            open(PROCESSED_LOG, "a+") as proc_log,
+            open(LANG_UNKNOWN_LOG, "a+") as lang_log,
+        ):
 
             for file in tqdm(files, desc="Processing files"):
                 print(f"file being processed: {file}")

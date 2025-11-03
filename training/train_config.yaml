@@ -5,15 +5,15 @@ training:
   eval_interval : 2000
   log_interval : 100
   eval_iters : 200
-  eval_only : false  # if True, script exits right after the first eval
-  always_save_checkpoint : true  # if True, always save a checkpoint after each eval
-  gradient_accumulation_steps : 5
+  eval_only : false
+  always_save_checkpoint : true
+  gradient_accumulation_steps : 6
   learning_rate: 3.0e-4
-  decay_lr : True  # whether to decay the learning rate
-  warmup_iters : 1500  # how many steps to warm up for
-  lr_decay_iters : 1000  # should be ~: max_iters per Chinchilla
-  min_lr : 6e-5  # minimum learning rate, should be ~: learning_rate/10 per Chinchilla
-  compile : true  # use PyTorch 2.0 to compile the model to be faster
+  decay_lr : True
+  warmup_iters : 1500
+  lr_decay_iters : 1000
+  min_lr : 6e-5 
+  compile : true
   display_model_output_iter : 768
   use_cce : True  # to use cut cross entropy or not
   scheduler: "cosine"
@@ -30,21 +30,21 @@ training:
   beta2 : 0.95
   grad_clip : 1.0
   log_grad_norm: true
-  log_weights: True  # Log weight distributions
+  log_weights: True  
   log_system_metrics:  True
-  log_moe_metrics: True  # Log MoE expert utilization
-  log_attention_metrics: True  # Log attention statistics
+  log_moe_metrics: True  
+  log_attention_metrics: True 
   monitor_interval: 50
   device: "cuda"
   gemm_impl: "bf16"
-  use_custom_causal_mask: true  # whether to use a custom causal mask for MLA attention
+  use_custom_causal_mask: true
 
-# wandb logging
+
 wandb: 
-  log : true  # disabled by default
+  log : true
   project : sabiyarn-ablations
   wandb_entity: "damilojohn"
-  wandb_run_name : mla_moe_cce  # 'run' + str(time.time())
+  wandb_run_name : GQA_CCE_DISTRIBUTED
   save_model_to_wandb: true
   eval_interval: 2000
   log_interval: 100
@@ -89,7 +89,7 @@ model:
   init_std: 0.02
 
   # Layer Sharing
-  layer_sharing: True
+  layer_sharing: False
   layer_sharing_strategy: "repeat_all_over" #"immediate"
   n_unique_layers: 8
 
@@ -130,11 +130,12 @@ optimizer:
 
 
 # DDP settings
-ddp:
+distributed:
+  dist: true
+  dist_strategy: "zero-3"
   rank : 0
-  world_size: 1
+  world_size: 2
   backend : "nccl"
-  use_dp: False
 
 #Accelerate config
 accelerate: 

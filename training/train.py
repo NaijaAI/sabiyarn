@@ -19,7 +19,11 @@ from ..sabiyarn.differential_attention import DiffAttnArgs
 from ..cut_cross_entropy import linear_cross_entropy
 from .utils import *
 from .constant_tokens import MASK
-from .training_attention_mask import create_causal_mask, create_causal_mask_ultra_optimized, create_causal_mask_optimized
+from .training_attention_mask import (
+    create_causal_mask,
+    create_causal_mask_ultra_optimized,
+    create_causal_mask_optimized,
+)
 import wandb
 from torch.optim import SGD, Adam, AdamW
 from bitsandbytes import optim  # For Adam8bit if using the bitsandbytes library
@@ -42,8 +46,12 @@ out_dir = config.training.out_dir
 eval_interval = config.training.eval_interval
 log_interval = config.training.log_interval
 eval_iters = config.training.eval_iters
-eval_only = config.training.eval_only  # if True, script exits right after the first eval
-always_save_checkpoint = config.training.always_save_checkpoint  # if True, always save a checkpoint after each eval
+eval_only = (
+    config.training.eval_only
+)  # if True, script exits right after the first eval
+always_save_checkpoint = (
+    config.training.always_save_checkpoint
+)  # if True, always save a checkpoint after each eval
 init_from = config.model.init_from  # 'scratch' or 'resume'
 use_cce = config.model.training.use_cce  # to use cut cross entropy or not
 
@@ -54,18 +62,24 @@ wandb_run_name = config.wandb.run_name  # 'run' + str(time.time())
 
 # data
 dataset = config.data.dataset
-gradient_accumulation_steps = config.training.gradient_accumulation_steps # used to simulate larger batch sizes
+gradient_accumulation_steps = (
+    config.training.gradient_accumulation_steps
+)  # used to simulate larger batch sizes
 batch_size = train_batch_size
 
 # model
 vocab_size = config.model.vocab_size
 n_layers = config.model.n_layers
 n_heads = config.model.n_heads
-dropout = config.model.dropout  # for pretraining 0 is good, for finetuning try 0.model.1+
+dropout = (
+    config.model.dropout
+)  # for pretraining 0 is good, for finetuning try 0.model.1+
 bias = config.model.bias  # do we use bias inside LayerNorm and Linear layers?
 dim = config.model.dim
 n_kv_heads = config.model.n_kv_heads
-multiple_of = config.model.multiple_of # make SwiGLU hidden layer size multiple of large power of 2
+multiple_of = (
+    config.model.multiple_of
+)  # make SwiGLU hidden layer size multiple of large power of 2
 ffn_dim_multiplier = config.model.ffn_dim_multiplier
 norm_eps = config.model.norm_eps
 use_moe = config.model.use_moe
@@ -83,18 +97,24 @@ tokenizer_name = config.model.tokenizer.name
 
 # adamw optimizer
 optimizer = config.optimizer.name
-learning_rate = config.optimizer.learning_rate # max learning rate
+learning_rate = config.optimizer.learning_rate  # max learning rate
 max_iters = config.optimizer.max_iters  # total number of training iterations
 weight_decay = config.optimizer.weight_decay
 beta1 = config.optimizer.beta1
 beta2 = config.optimizer.beta2
-grad_clip = config.optimizer.grad_clip # clip gradients at this value, or disable if == config.0.0
+grad_clip = (
+    config.optimizer.grad_clip
+)  # clip gradients at this value, or disable if == config.0.0
 
 # learning rate decay settings
 decay_lr = config.training.decay_lr  # whether to decay the learning rate
-warmup_iters = config.training.warmup_iters # how many steps to warm up for
-lr_decay_iters = config.training.lr_decay_iters  # should be ~= config.max_iters per Chinchilla
-min_lr = config.training.min_lr  # minimum learning rate, should be ~= config.learning_rate/10 per Chinchilla
+warmup_iters = config.training.warmup_iters  # how many steps to warm up for
+lr_decay_iters = (
+    config.training.lr_decay_iters
+)  # should be ~= config.max_iters per Chinchilla
+min_lr = (
+    config.training.min_lr
+)  # minimum learning rate, should be ~= config.learning_rate/10 per Chinchilla
 
 # DDP settings
 # os.environ["MASTER_ADDR"] = config."127.0.0.1"
@@ -106,7 +126,9 @@ backend = config.ddp.backend
 
 
 # system
-device_type = "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
+device_type = (
+    "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
+)
 dtype = (
     "bfloat16"
     if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
@@ -190,7 +212,7 @@ def get_batch(split, verbose=False):
         data = np.memmap(train_data_path, dtype=np.uint16, mode="r")
     else:
         data = np.memmap(eval_data_path, dtype=np.uint16, mode="r")
-        
+
     ix = torch.randint(len(data) - block_size, (train_batch_size,))
     x = [torch.from_numpy((data[i : i + block_size]).astype(np.int64)) for i in ix]
     y = [
@@ -262,7 +284,7 @@ def configure_optimizer(
 iter_num = 0
 best_val_loss = 1e9
 
-    # init a new model from scratch
+# init a new model from scratch
 print("Initializing a new model from scratch")
 if use_moe:
     moe = MoeArgs(num_experts, num_experts_per_tok)
@@ -327,7 +349,7 @@ if init_from == "checkpoint":
     ckpt_path = os.path.join(out_dir, "ckpt.pt")
     checkpoint = torch.load(ckpt_path, map_location=device)
     checkpoint_model_args = checkpoint["model_args"]
-   
+
     state_dict = checkpoint["model"]
     model.load_state_dict(state_dict)
     iter_num = checkpoint["iter_num"]
@@ -347,7 +369,7 @@ if compile:
     print("compiling the model... (takes a ~minute)")
     unoptimized_model = model
     model = torch.compile(model)  # requires PyTorch 2.0
-    
+
 ddp_local_rank = rank
 # wrap model into DDP container
 if ddp:
@@ -388,7 +410,7 @@ def estimate_loss(use_cce: bool = False):
                         model.lm_head.weight,
                         Y,
                         shift=True,
-                        ignore_index = -100,
+                        ignore_index=-100,
                         impl="torch_compile",
                     )
                 else:
@@ -523,7 +545,7 @@ def train():
                         hidden_states,
                         model.lm_head.weight,
                         Y,
-                        ignore_index = MASK,
+                        ignore_index=MASK,
                         shift=True,
                         impl="torch_compile",
                     )
