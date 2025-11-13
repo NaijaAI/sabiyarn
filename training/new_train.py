@@ -1,12 +1,3 @@
-#!/usr/bin/env python3
-"""
-Training script for SabiYarn models with support for:
-- All attention mechanisms (MHA, MLA, Differential Attention)
-- MoE, Multi-Token Prediction, Layer Sharing
-- Custom causal masking
-- Auto-distributed training detection
-"""
-
 import os
 import sys
 import time
@@ -42,13 +33,7 @@ import numpy as np
 import wandb
 import transformers
 
-# SabiYarn imports
-from data import prepare
-from sabiyarn.model import ModelArgs, SabiYarn, AttentionType
-from sabiyarn.MLA import MLAConfig
-from sabiyarn.differential_attention import DiffAttnArgs
-from sabiyarn.GQA import GQAArgs
-from sabiyarn.MHA import SelfAttnArgs
+
 from cut_cross_entropy import linear_cross_entropy
 from training.utils import *
 from training.constant_tokens import MASK
@@ -86,45 +71,6 @@ clear_cuda()
 
 @dataclass
 class TrainingConfig:
-    # Model Architecture
-    attention_type: AttentionType = AttentionType.GQA #"self_attention" , "differential_attention", "MLA"
-    dim: int = 768
-    n_layers: int = 20
-    n_heads: int = 8
-    n_kv_heads: Optional[int] = 4
-    vocab_size: int = 64000
-    max_seq_len: int = 1024
-    max_batch_size: int = 8 #8
-    train_batch_size: int = 8 #8
-    bias: bool = True
-    dropout: float= 0.1
-    use_kv_cache: bool = False
-    # Attention-specific configs
-    use_mla: bool = False
-    use_differential_attention: bool = False
-    use_kv_cache = True
-    # MLA Configuration
-    mla_q_lora_rank: int = 512
-    mla_kv_lora_rank: int = 256
-    mla_qk_rope_head_dim: int = 64
-    mla_v_head_dim: int = 128
-    mla_qk_nope_head_dim: int = 128
-    rope_theta: float=10000.0
-    rope_factor: int=1
-    beta_fast: int=32
-    beta_slow: int=1
-    mscale: float =1.0
-    
-    # MoE Configuration (only with MLA)
-    use_moe: bool = False
-    n_routed_experts: int = 3
-    n_activated_experts: int = 2
-    moe_inter_dim: int = 1024
-    n_shared_experts: int = 2
-    score_function: str = "sigmoid"
-    bias_update_speed: float = 0.001
-    moe_aux_loss_weight: float = 0.001  # Weight for MoE sequence-wise auxiliary loss
-    
     # Multi-Token Prediction (only with MLA)
     use_multi_token_prediction: bool = False
     num_prediction_tokens: int = 2
@@ -132,21 +78,7 @@ class TrainingConfig:
     mtp_share_embeddings: bool = True
     mtp_only_training: bool = True  # When True, only use MTP loss for training
     
-    # Layer Sharing (MobileLLM-style)
-    layer_sharing_strategy: str = "immediate"
-    layer_sharing: bool = True
-    n_unique_layers: Optional[int] = 10
-    layer_sharing_strategy  = 'immediate'
-    
-    # Other model features
-    use_logic_network: bool = False
-    use_j_linear: bool = True
-    tie_weights: bool = False
-    norm_eps: float = 1e-5
-    init_std: float = 0.02
-    
     # Training Configuration
-    
     gradient_accumulation_steps: int = 20   # 5 * 8
     learning_rate: float = 3e-4
     max_iters: int = 50000
@@ -171,8 +103,6 @@ class TrainingConfig:
     use_custom_causal_mask: bool = True
     mask_id_value: int = 1  # ID value for custom masking, this is for the end of text token id value from our tokenizer which is 1 for llama 
     
-    # Data
-    dataset: str = "Aletheia-ng/pretrain_test" # "semran1/finewebedu-dedup-600k"
     train_data_path: str = "./training.bin"
     eval_data_path: str = "./validation.bin"
     
@@ -188,8 +118,8 @@ class TrainingConfig:
     init_from: str = "scratch"  # "scratch" or "resume"
     
     # WandB logging
-    wandb_log: bool = True
-    wandb_entity: str = "nanayeb34-sabiyarn"
+    wandb_log: bool = False
+    wandb_entity: str = ""
     wandb_project: str = "sabiyarn-new-training"
     wandb_run_name: str = "modern_training"
     wandb_tags: list = field(default_factory=lambda: ["MLA", "MoE", "MTP", "SabiYarn"])
@@ -225,89 +155,9 @@ class TrainingConfig:
     registry_cache: str = "global_hash_registry.lmdb",
     map_size_gb: int = 50,
     
-    # Overwrite train.bin and val.bin if they exist
-    overwrite_data: bool = False
-    
-    ## The below parameter should be used for only testing
-    hf_repo_files = {
-        "Aletheia-ng/pretrain_test": [
-            'Roleplay-Amharic_english_translation_batch_3846_1923-train.parquet',
-            'TinyStories_yoruba_english_translation_batch_2760_1380-train.parquet',
-            'afriberta-corpus_afaanoromoo_language_identification_batch_20000_20001-train.parquet',
-            'english-nigerian-pidgin_sentence-pairs_mt560_english_translation_batch_44002_22001-train.parquet',
-            'english_to_igbo_english_translation_batch_44644_522322-train.parquet',
-            'english_to_igbo_english_translation_batch_500000_250000-train.parquet',
-            'english_to_igbo_english_translation_batch_500000_500000-train.parquet',
-            #  'afriberta-corpus_afaanoromoo_language_identification_batch_410841_410841-train.parquet',
-            'afriberta-corpus_afaanoromoo_monolingual_batch_410841_410841-train.parquet',
-            'afriberta-corpus_gahuza_language_identification_batch_20000_20001-train.parquet',
-            'afriberta-corpus_gahuza_monolingual_batch_131953_131953-train.parquet',
-            'afriberta-corpus_igbo_monolingual_batch_337082_337082-train.parquet',
-            'afriberta-corpus_pidgin_monolingual_batch_161843_161843-train.parquet',
-            'afriberta-corpus_somali_language_identification_batch_20000_20001-train.parquet',
-            'afriberta-corpus_somali_monolingual_batch_500000_500000-train.parquet',
-            'afriberta-corpus_swahili_monolingual_batch_500000_1000000-train.parquet',
-            'afriberta-corpus_tigrinya_language_identification_batch_12076_12076-train.parquet',
-            'afriberta-corpus_tigrinya_monolingual_batch_12076_12076-train.parquet',
-            'afriberta-corpus_yoruba_monolingual_batch_149148_149148-train.parquet',
-            'afrisenti_amh_sentiment_classification_batch_5984_5984-train.parquet',
-            'afrisenti_eng_sentiment_classification_batch_11763_11763-train.parquet',
-            'afrisenti_eng_sentiment_classification_batch_1681_1681-validation.parquet',
-            'afrisenti_hau_sentiment_classification_batch_14172_14172-train.parquet',
-            'afrisenti_ibo_sentiment_classification_batch_10192_10192-train.parquet',
-            'afrisenti_swa_sentiment_classification_batch_1810_1810-train.parquet',
-            'afrisenti_swa_sentiment_classification_batch_453_453-validation.parquet',
-            'afrisenti_yor_sentiment_classification_batch_8522_8522-train.parquet',
-            'c4_af_language_identification_batch_20000_20001-train.parquet',
-            'c4_af_monolingual_batch_500000_1000000-train.parquet',
-            'c4_am_language_identification_batch_20000_20001-train.parquet',
-            'c4_am_monolingual_batch_162870_162870-train.parquet',
-            'c4_ha_language_identification_batch_20000_20001-train.parquet',
-            'c4_ha_monolingual_batch_247479_247479-train.parquet',
-            'c4_ig_language_identification_batch_20000_20001-train.parquet',
-            'c4_ig_monolingual_batch_92909_92909-train.parquet',
-            'c4_so_language_identification_batch_20000_20001-train.parquet',
-            'c4_so_monolingual_batch_500000_500000-train.parquet',
-            'c4_st_language_identification_batch_20000_20001-train.parquet',
-            'c4_st_monolingual_batch_66837_66837-train.parquet',
-            'c4_sw_language_identification_batch_20000_20001-train.parquet',
-            'c4_sw_monolingual_batch_500000_500000-train.parquet',
-            'c4_xh_language_identification_batch_20000_20001-train.parquet',
-            'c4_xh_monolingual_batch_69048_69048-train.parquet',
-            'c4_yo_language_identification_batch_20000_20001-train.parquet',
-            'c4_yo_monolingual_batch_46214_46214-train.parquet',
-            'c4_zu_language_identification_batch_20000_20001-train.parquet',
-            'c4_zu_monolingual_batch_500000_500000-train.parquet',
-            'fineweb-bbc-news_CC-MAIN-2013-20_monolingual_batch_179829_179829-train.parquet',
-            'fineweb-bbc-news_CC-MAIN-2013-20_monolingual_batch_20000_20001-train.parquet',
-            'flores_101_afr_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_afr_topic_classification_batch_997_997-dev.parquet',
-            'flores_101_eng_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_eng_topic_classification_batch_997_997-dev.parquet',
-            'flores_101_hau_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_hau_topic_classification_batch_997_997-dev.parquet',
-            'flores_101_ibo_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_ibo_topic_classification_batch_997_997-dev.parquet',
-            'flores_101_som_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_som_topic_classification_batch_997_997-dev.parquet',
-            'flores_101_swh_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_swh_topic_classification_batch_997_997-dev.parquet',
-            'flores_101_wol_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_wol_topic_classification_batch_997_997-dev.parquet',
-            'flores_101_xho_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_xho_topic_classification_batch_997_997-dev.parquet',
-            'flores_101_yor_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_yor_topic_classification_batch_997_997-dev.parquet',
-            'flores_101_zul_topic_classification_batch_1012_1012-devtest.parquet',
-            'flores_101_zul_topic_classification_batch_997_997-dev.parquet',
-            'kinyarwanda_monolingual_v01.0_kinyarwanda_monolingual_batch_78733_78733-train.parquet',
-            'swahili-english-translation_swahili_translation_batch_500000_1000000-train.parquet',
-            'twi-english-parallel-synthetic-50m_twi_translation_batch_500000_1000000-train.parquet',
-            'xlsum_amharic_headline_batch_57294_57294-train.parquet',
-            'xlsum_amharic_headline_batch_719_719-validation.parquet']
-    }
 
 # set seed
+torch.set_seed(42)
 
 class SabiYarnTrainer:   
     def __init__(self, config: TrainingConfig, volume: modal.Volume = None):
@@ -325,7 +175,6 @@ class SabiYarnTrainer:
         self.setup_output_dirs()
         self.setup_logging()
         self._resume_checkpoint = None
-        self.setup_data()
         self.setup_model()
         self.setup_optimizer()
         self.setup_compilation()
@@ -689,50 +538,7 @@ class SabiYarnTrainer:
         # Log to W&B
         wandb.log(metrics, step=self.iter_num)
                 
-    def setup_data(self):
-        """Setup data loading."""
-        LOG.info("Preparing dataset...")
-        # Ensure prepare writes to the configured paths
-        try:
-            os.environ["TRAIN_DATA_PATH"] = self.config.train_data_path
-            os.environ["VAL_DATA_PATH"] = self.config.eval_data_path
-            LOG.info(f"Train data path: {self.config.train_data_path}")
-            LOG.info(f"Eval data path: {self.config.eval_data_path}")
-            LOG.info(f"Overwrite existing data: {self.config.overwrite_data}")
-            # Persist processed-files ledger on the same volume as the bins (default)
-            if self.config.overwrite_data:
-                if os.path.exists(self.config.train_data_path):
-                    os.remove(self.config.train_data_path)
-                if os.path.exists(self.config.eval_data_path):
-                    os.remove(self.config.eval_data_path)
-                    
-            state_dir = os.path.dirname(self.config.train_data_path)
-            os.environ.setdefault("PREP_STATE_PATH", os.path.join(state_dir, "data_struct.json"))
-        except Exception:
-            pass
-
-        # Skip re-tokenization if bins already exist and are non-empty, unless FORCE_PREP=1
-        def _is_nonempty(path: str) -> bool:
-            try:
-                return os.path.exists(path) and os.path.getsize(path) > 0
-            except Exception:
-                return False
-            
-        LOG.info(f"Checking for existing data bins...{_is_nonempty(self.config.train_data_path) and _is_nonempty(self.config.eval_data_path) and not self.config.overwrite_data}")
-
-        if _is_nonempty(self.config.train_data_path) and _is_nonempty(self.config.eval_data_path) and not self.config.overwrite_data: # os.getenv("FORCE_PREP", "0") != "1":
-            try:
-                import numpy as np
-                tr = np.memmap(self.config.train_data_path, dtype=np.uint16, mode="r")
-                va = np.memmap(self.config.eval_data_path, dtype=np.uint16, mode="r")
-                LOG.info(f"Using existing bins: train={len(tr)} tokens, val={len(va)} tokens")
-            except Exception:
-                LOG.info("Using existing bins (could not read counts)")
-        else:
-            prepare.run([self.config.dataset], self.config.hf_repo_files, os.cpu_count(), self.config.n_samples, self.config.seed,
-                        self.config.hash_algo, self.config.registry_cache, self.config.map_size_gb)
-            if self.volume:
-                self.volume.commit()
+    
         
         # Initialize tokenizer if available
         self.tokenizer = None
@@ -749,9 +555,8 @@ class SabiYarnTrainer:
         
         if self.config.init_from == "scratch":
             # Create model configuration based on attention type
-            model_args = self.create_model_args()
-            self.model = SabiYarn(model_args)
-            model_size_info = self.model.get_model_size()
+            self.model = ...
+            model_size_info = self.model.get_num_params()
             LOG.info(f"Model initialized from scratch: {model_size_info}")
             LOG.info(f"Model: {self.model}")
             
@@ -773,107 +578,6 @@ class SabiYarnTrainer:
             LOG.info(f"Model resumed from checkpoint: {self.model.get_model_size()}")
             
         self.model.to(device=torch.device(self.config.device), dtype=self.ptdtype)
-        
-    def create_model_args(self) -> ModelArgs:
-        """Create ModelArgs based on training configuration."""
-        
-        # Create attention-specific configurations
-        mla_config = None
-        diff_attn_config = None
-        gqa_config = None
-        mha_config = None
-        
-        if self.config.attention_type ==  AttentionType.MLA:
-            mla_config = MLAConfig(
-                hidden_size=self.config.dim,
-                num_heads=self.config.n_heads,
-                max_seq_len=self.config.max_seq_len,
-                max_batch_size=self.config.max_batch_size,
-                attention_dropout=0.0,
-                q_lora_rank=self.config.mla_q_lora_rank,
-                qk_rope_head_dim=self.config.mla_qk_rope_head_dim,
-                kv_lora_rank=self.config.mla_kv_lora_rank,
-                v_head_dim=self.config.mla_v_head_dim,
-                qk_nope_head_dim=self.config.mla_qk_nope_head_dim,
-                attention_bias=False,
-                original_seq_len=self.config.max_seq_len,
-                world_size = self.config.world_size,
-                attn_impl= self.config.attn_impl,
-                rope_theta=self.config.rope_theta,
-                rope_factor=self.config.rope_factor,
-                beta_fast=self.config.beta_fast,
-                beta_slow=self.config.beta_slow,
-                mscale=self.config.mscale
-            )
-            
-        elif self.config.attention_type == AttentionType.DIFFERENTIAL_ATTENTION:
-            diff_attn_config = DiffAttnArgs(
-                depth=0,  # Will be set per layer
-                max_batch_size=self.config.max_batch_size,
-                n_heads=self.config.n_heads,
-                embed_dim=self.config.dim,
-                n_kv_heads=self.config.n_kv_heads or self.config.n_heads,
-                max_seq_len=self.config.max_seq_len,
-                norm_eps=self.config.norm_eps
-            )
-            
-        elif self.config.attention_type == AttentionType.GQA:
-            gqa_config = GQAArgs(dim= self.config.dim, n_kv_heads= self.config.n_kv_heads, n_heads = self.config.n_heads,  
-                    max_seq_len = self.config.max_seq_len, max_batch_size = self.config.max_batch_size, use_kv_cache = self.config.use_kv_cache, 
-                    dropout = self.config.dropout)
-        else:
-            mha_config = SelfAttnArgs(dim= self.config.dim,  n_heads = self.config.n_heads,  
-                    max_seq_len = self.config.max_seq_len, max_batch_size = self.config.max_batch_size, use_kv_cache = self.config.use_kv_cache, bias= self.config.bias, dropout=self.config.dropout)
-            
- 
-        return ModelArgs(
-            # Basic architecture
-            dim=self.config.dim,
-            n_layers=self.config.n_layers,
-            n_heads=self.config.n_heads,
-            n_kv_heads=self.config.n_kv_heads,
-            vocab_size=self.config.vocab_size,
-            max_batch_size=self.config.max_batch_size,
-            max_seq_len=self.config.max_seq_len,
-            
-            # Attention configuration
-            attention_type=self.config.attention_type,
-            mla_config=mla_config,
-            diff_attn_config=diff_attn_config,
-            mha_config = mha_config,
-            gqa_config = gqa_config,
-            
-            # MoE configuration (only with MLA)
-            moe=self.config.use_moe and self.config.attention_type == "MLA",
-            n_routed_experts=self.config.n_routed_experts,
-            n_activated_experts=self.config.n_activated_experts,
-            moe_inter_dim=self.config.moe_inter_dim,
-            n_shared_experts=self.config.n_shared_experts,
-            bias_update_speed=self.config.bias_update_speed,
-            moe_aux_loss_weight=self.config.moe_aux_loss_weight,
-            score_function=self.config.score_function,
-            
-            # Multi-token prediction (only with MLA)
-            multi_token_prediction=self.config.use_multi_token_prediction and self.config.attention_type == "MLA",
-            num_prediction_tokens=self.config.num_prediction_tokens,
-            mtp_loss_weight=self.config.mtp_loss_weight,
-            mtp_share_embeddings=self.config.mtp_share_embeddings,
-            
-            # Layer sharing
-            layer_sharing=self.config.layer_sharing,
-            n_unique_layers=self.config.n_unique_layers,
-            layer_sharing_strategy=self.config.layer_sharing_strategy,
-            
-            # Other features
-            logic_network=self.config.use_logic_network,
-            use_j=self.config.use_j_linear,
-            tie_weights=self.config.tie_weights,
-            norm_eps=self.config.norm_eps,
-            init_std=self.config.init_std,
-            
-            # Distributed training (auto-detected)
-            auto_detect_distributed=self.config.auto_detect_distributed,
-        )
 
     def count_non_masked_tokens(self, tensor: torch.Tensor, mask_val: int = -100) -> int:
         return (tensor != mask_val).sum().item()
@@ -1131,7 +835,6 @@ class SabiYarnTrainer:
 
                 except Exception as e:
                     LOG.warning(f"Text generation failed: {e}")
-                finally:
                     continue
                     
             self.model.train()
@@ -1271,8 +974,8 @@ class SabiYarnTrainer:
         
 
     def monitor_and_control_gradients(self, model, optimizer, step, old_lr,
-                                  clip_value=1e2, tiny_value=1e-8,
-                                  lr_decay_factor=0.5):
+                                clip_value=1e2, tiny_value=1e-8,
+                                lr_decay_factor=0.5):
         """
         Monitors gradients and takes action if exploding/vanishing gradients are detected.
     
@@ -1303,13 +1006,13 @@ class SabiYarnTrainer:
             # Exploding gradient detection
             if abs(grad_min) > clip_value or abs(grad_max) > clip_value:
                 LOG.info(f"[Step {step}] ⚠️ Exploding gradient in `{name}` "
-                      f"(min={grad_min:.2e}, max={grad_max:.2e})")
+                    f"(min={grad_min:.2e}, max={grad_max:.2e})")
                 exploding_detected = True
     
             # Vanishing gradient detection
             if grad_abs_mean < tiny_value:
                 LOG.info(f"[Step {step}] ⚠️ Vanishing gradient in `{name}` "
-                      f"(abs mean={grad_abs_mean:.2e}), (min={grad_min:.2e})")
+                    f"(abs mean={grad_abs_mean:.2e}), (min={grad_min:.2e})")
                 vanishing_detected = True
 
         # Summary statistics for whole model
@@ -1325,7 +1028,7 @@ class SabiYarnTrainer:
                 LOG.info(f"[Step {step}] 🚨 Learning rate reduced from {old_lr:.3e} to {new_lr:.3e}")
             self.lr_manually_reduced = True
             return new_lr
-               
+
         return old_lr #exploding_detected, vanishing_detected
 
     def safe_optimizer_step(self): #, exploding_detected: bool = False):
@@ -1387,7 +1090,7 @@ class SabiYarnTrainer:
                     wandb.log(eval_metrics, step=self.iter_num)
                     
                 if losses["val"] < self.best_val_loss or self.config.always_save_checkpoint:
-         
+        
                     self.best_val_loss = losses["val"]
                     if self.iter_num > 0:
                         # self.save_checkpoint()
