@@ -15,11 +15,11 @@ training:
   min_lr : 6e-5 
   compile : true
   display_model_output_iter : 768
-  use_cce : True  # to use cut cross entropy or not
+  use_cce : false # to use cut cross entropy or not
   scheduler: "cosine"
   init_from:  "scratch"
   max_batch_size : 16
-  use_cut_cross_entropy: true
+  use_cut_cross_entropy: false
   enable_generation_during_training: true
   dtype: "bfloat16"
   compile_model: true
@@ -44,7 +44,7 @@ wandb:
   log : true
   project : sabiyarn-ablations
   wandb_entity: "damilojohn"
-  wandb_run_name : GQA_CCE_DISTRIBUTED
+  wandb_run_name : GQA_FSDP_DISTRIBUTED
   save_model_to_wandb: true
   eval_interval: 2000
   log_interval: 100
@@ -92,9 +92,8 @@ model:
   layer_sharing: False
   layer_sharing_strategy: "repeat_all_over" #"immediate"
   n_unique_layers: 8
-
-  # Cut Cross Entropu
-  use_cut_cross_entropy: true
+  # cce
+  use_cut_cross_entropy: false
   # Multi-Token Prediction
   use_multi_token_prediction: False
   num_prediction_tokens: 2

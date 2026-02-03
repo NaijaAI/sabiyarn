@@ -836,7 +836,7 @@ class SabiYarn(nn.Module):
             idx_cond = (
                 idx
                 if idx.size(1) <= self.params.max_seq_len
-                else idx[:, -self.params.max_seq_len :]
+                else idx[:, -self.params.max_seq_len: ]
             )
 
             _, logits, _ = self(

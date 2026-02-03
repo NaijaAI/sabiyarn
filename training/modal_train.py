@@ -199,7 +199,7 @@ def train_sabiyarn(volume: modal.Volume):
             train_script,
         ]
 
-        print(f"🚀 Launching distributed training with command:\n{' '.join(cmd)}")
+        print(f" Launching distributed training with command:\n{' '.join(cmd)}")
 
         # -------------------------------
         # Environment variables

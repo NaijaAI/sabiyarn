@@ -39,6 +39,7 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.optim import SGD, Adam, AdamW
 import numpy as np
 import wandb
@@ -387,15 +388,22 @@ class SabiYarnTrainer:
 
         if self.config.dist:
             import torch
+            from functools import partial
             import os
             from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+            from torch.distributed.fsdp.fully_sharded_data_parallel import (
+                CPUOffload,
+                BackwardPrefetch)
+            from torch.distributed.fsdp.wrap import (
+                size_based_auto_wrap_policy,
+                transformer_auto_wrap_policy)
+
             torch.manual_seed(1337 + self.seed_offset)
 
             os.environ["WORLD_SIZE"] = str(self.config.world_size)
             os.environ["MASTER_ADDR"] = "localhost"
             os.environ["MASTER_PORT"] = "50000"
             try:
-
                 dist.init_process_group(backend=self.config.backend,
                                         init_method="tcp://localhost:50000",
                                         rank=int(os.environ.get("RANK")),
@@ -405,15 +413,27 @@ class SabiYarnTrainer:
                 local_rank = int(
                     os.environ.get("LOCAL_RANK", rank % torch.cuda.device_count())
                 )
-                LOG.info(f"running on process {local_rank} with rank {rank}")
+                LOG.info(f"running on process {local_rank} with rank {rank} \n")
 
                 torch.cuda.set_device(rank)
 
                 assert self.config.gradient_accumulation_steps % self.config.world_size == 0
                 self.config.gradient_accumulation_steps //= self.config.world_size
 
+                auto_wrap_policy = partial(
+                    size_based_auto_wrap_policy,
+                    min_num_params=1e6  # Wrap layers with >1M params
+                )
+
                 self.model = self.model.to(f'cuda:{local_rank}')
-                self.model = DDP(self.model, device_ids=[local_rank])
+                self.model = FSDP(
+                    self.model,
+                    auto_wrap_policy=auto_wrap_policy,
+                    backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
+                    device_id=local_rank,
+                    limit_all_gathers=True,
+                )
+                
 
                 self.master_process = (rank == 0)
                 if self.master_process:
@@ -627,7 +647,7 @@ class SabiYarnTrainer:
         if not self.config.use_moe:
             return metrics
 
-        raw_model_obj = model.module if isinstance(model, DDP) else model
+        raw_model_obj = model.module if isinstance(model, (FSDP, DDP)) else model
 
         # Find MoE layers
         moe_layers = []
@@ -662,10 +682,10 @@ class SabiYarnTrainer:
 
         total_norm = 0.0
         param_count = 0
-        Model = model.module if isinstance(model, DDP) else model
+        model = model.module if isinstance(model, (FSDP, DDP)) else model
 
 
-        for name, param in model.module.named_parameters():
+        for name, param in model.named_parameters():
             if param.grad is not None:
                 param_norm = param.grad.data.norm(2)
                 total_norm += param_norm.item() ** 2
@@ -686,9 +706,9 @@ class SabiYarnTrainer:
     def get_weight_metrics(self, model) -> Dict[str, float]:
         """Get weight distribution statistics."""
         metrics = {}
-        raw_model_obj = model.module if isinstance(model, DDP) else model
+        raw_model_obj = model.module if isinstance(model, (FSDP, DDP)) else model
 
-        for name, param in model.named_parameters():
+        for name, param in raw_model_obj.named_parameters():
             if param.requires_grad:
                 weight_data = param.data
 
@@ -1029,22 +1049,24 @@ class SabiYarnTrainer:
             self.unoptimized_model = self.model
             self.model = torch.compile(self.model)
     
-    def setup_dataloader(self):
+    def setup_distributed_dataloader(self):
         class TokenDataset(Dataset):
             def __init__(self, config: TrainingConfig,
                          split="train"):
-                
-                self.data_path = config.train_data_path if split == "train" else config.val_data_path
+                self.data_path = config.train_data_path if split == "train" else config.eval_data_path
                 self.max_seq_len = config.max_seq_len
                 self.split = split
                 self.data = np.memmap(self.data_path, dtype=np.uint16, mode="r")
                 self.token_count = len(self.data)
 
             def __getitem__(self, idx):
-                X = torch.from_numpy((self.data[idx : idx + self.max_seq_len]).astype(
+                X = torch.from_numpy(
+                    (self.data[idx: idx + self.max_seq_len]).astype(
                             np.int64))
 
-                Y = torch.from_numpy((self.data[idx + 1 : idx + 1 + self.max_seq_len]).astype(np.int64))
+                Y = torch.from_numpy(
+                    (self.data[idx + 1: idx + 1 + self.max_seq_len]).astype(
+                        np.int64))
 
                 return X, Y
 
@@ -1052,7 +1074,7 @@ class SabiYarnTrainer:
                 return self.token_count
             
         train_dataset = TokenDataset(
-            config = config,
+            config=self.config,
             split="train"
         )
         
@@ -1074,7 +1096,7 @@ class SabiYarnTrainer:
             drop_last=True
         )
         val_dataset = TokenDataset(
-            config,
+            self.config,
             split='val'
         )
         
@@ -1100,7 +1122,6 @@ class SabiYarnTrainer:
 
         self.train_iter = iter(self.train_loader)
         self.val_iter = iter(self.val_loader)
-
 
     def get_batch(self, split: str):
         """Load a batch of data."""
@@ -1189,7 +1210,7 @@ class SabiYarnTrainer:
 
         # Prepare attention mask
         mask = self.prepare_attention_mask(tokens)
-        raw_model_obj = self.model.module if isinstance(self.model, DDP) else self.model
+        raw_model_obj = self.model.module if isinstance(self.model, (FSDP, DDP)) else self.model
 
         # Forward pass
         if raw_model_obj.use_multi_token:
@@ -1235,7 +1256,7 @@ class SabiYarnTrainer:
                 )
             except Exception as e:
                 LOG.warning(f"MTP loss computation failed: {e}")
-                # Fallback to standard loss
+                # Fallback to standard loss, first check if we want to use cce
                 if self.config.use_cut_cross_entropy:
                     total_loss = linear_cross_entropy(
                         hidden_states,
@@ -1313,7 +1334,7 @@ class SabiYarnTrainer:
 
     def generate_sample_text(self, tokens: torch.Tensor):
         """Generate sample text for monitoring training progress."""
-        raw_model = self.model.module if isinstance(self.model, DDP) else self.model
+        raw_model = self.model.module if isinstance(self.model, (FSDP, DDP)) else self.model
         if self.tokenizer is None:
             return
         for i in range(min(8, len(tokens))):
@@ -1607,7 +1628,7 @@ class SabiYarnTrainer:
                 self.lr_manually_reduce = False
 
             # Evaluation and checkpointing
-            if self.iter_num % self.config.eval_interval == 0 and self.master_process:
+            if self.iter_num % self.config.eval_interval == 0:
                 losses = self.estimate_loss()
                 LOG.info(
                     f"Step {self.iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}"
@@ -1661,10 +1682,8 @@ class SabiYarnTrainer:
 
                 with self.ctx:
                     loss, _ = self.compute_loss(X, Y)
-                    # LOG.info(f"batch loss: {loss:.2f}")
                     loss = loss / self.config.gradient_accumulation_steps
 
-                # Get next batch while GPU is busy
                 X, Y = self.get_batch("train")
 
                 # Backward pass
@@ -1681,21 +1700,11 @@ class SabiYarnTrainer:
 
             # Gradient clipping and optimizer step
             self.safe_optimizer_step()
-
-            # if self.config.grad_clip != 0.0:
-            #     self.scaler.unscale_(self.optimizer)
-            #     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
-
-            # self.scaler.step(self.optimizer)
-            # self.scaler.update()
-            # self.optimizer.zero_grad(set_to_none=True)
-
-            # Timing and logging
             t1 = time.time()
             dt = t1 - t0
             t0 = t1
 
-            if self.iter_num % self.config.log_interval == 0 and self.master_process:
+            if self.iter_num % self.config.log_interval == 0:
                 lossf = loss.item() * self.config.gradient_accumulation_steps
                 LOG.info(
                     f"iter {self.iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, learning rate {lr}"
