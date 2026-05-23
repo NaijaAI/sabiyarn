@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from typing import cast
 
 import torch
-
 from .cce_backward import cce_backward_kernel
 from .cce_lse_forward import cce_lse_forward_kernel
 from .constants import IGNORE_INDEX
