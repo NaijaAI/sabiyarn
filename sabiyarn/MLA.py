@@ -9,16 +9,37 @@ import torch.distributed as dist
 from dataclasses import dataclass
 from typing import Tuple, Optional, Literal
 from .kernel import act_quant, weight_dequant, fp8_gemm
-from omegaconf import OmegaConf
 import math
 
-config = OmegaConf.load("/app/training/train_config.yaml")
-world_size = os.environ.get("WORLD_SIZE")  # the number of GPUs
-rank = os.environ.get("RANK")  # the rank of the current GPU
-block_size = (
-    config.model.max_seq_len
-)  # the block size of the input tensor. useful when using fp8
-gemm_impl: Literal["bf16", "fp8"] = config.training.gemm_impl
+# FP8 quantization block size (standard 128, matches DeepSeek kernel expectations).
+# Call configure() before constructing any MLA layers to override.
+_BLOCK_SIZE: int = 128
+_GEMM_IMPL: Literal["bf16", "fp8"] = os.environ.get("GEMM_IMPL", "bf16")  # type: ignore[assignment]
+
+
+def configure(block_size: int = 128, gemm_impl: str = "bf16") -> None:
+    """Override FP8 settings before constructing MLA layers."""
+    global _BLOCK_SIZE, _GEMM_IMPL
+    _BLOCK_SIZE = block_size
+    _GEMM_IMPL = gemm_impl  # type: ignore[assignment]
+
+
+def _get_world_size() -> int:
+    try:
+        if dist.is_available() and dist.is_initialized():
+            return dist.get_world_size()
+    except Exception:
+        pass
+    return int(os.environ.get("WORLD_SIZE", "1"))
+
+
+def _get_rank() -> int:
+    try:
+        if dist.is_available() and dist.is_initialized():
+            return dist.get_rank()
+    except Exception:
+        pass
+    return int(os.environ.get("RANK", "0"))
 
 
 @dataclass
@@ -74,11 +95,11 @@ def linear(
 
     if weight.element_size() > 1:
         return F.linear(x, weight, bias)
-    elif gemm_impl == "bf16":
+    elif _GEMM_IMPL == "bf16":
         weight = weight_dequant(weight, weight.scale)
         return F.linear(x, weight, bias)
     else:
-        x, scale = act_quant(x, block_size)
+        x, scale = act_quant(x, _BLOCK_SIZE)
         y = fp8_gemm(x, scale, weight, weight.scale)
         if bias is not None:
             y += bias
@@ -108,8 +129,8 @@ class Linear(nn.Module):
             torch.empty(out_features, in_features, dtype=dtype or Linear.dtype)
         )
         if self.weight.element_size() == 1:
-            scale_out_features = (out_features + block_size - 1) // block_size
-            scale_in_features = (in_features + block_size - 1) // block_size
+            scale_out_features = (out_features + _BLOCK_SIZE - 1) // _BLOCK_SIZE
+            scale_in_features = (in_features + _BLOCK_SIZE - 1) // _BLOCK_SIZE
             self.weight.scale = self.scale = nn.Parameter(
                 torch.empty(scale_out_features, scale_in_features, dtype=torch.float32)
             )
@@ -149,10 +170,11 @@ class ColumnParallelLinear(Linear):
     def __init__(
         self, in_features: int, out_features: int, bias: bool = False, dtype=None
     ):
+        self.world_size = _get_world_size()
         assert (
-            out_features % world_size == 0
-        ), f"Output features must be divisible by world size (world_size={world_size})"
-        self.part_out_features = out_features // world_size
+            out_features % self.world_size == 0
+        ), f"Output features must be divisible by world size (world_size={self.world_size})"
+        self.part_out_features = out_features // self.world_size
         super().__init__(in_features, self.part_out_features, bias, dtype)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -183,10 +205,11 @@ class RowParallelLinear(Linear):
     def __init__(
         self, in_features: int, out_features: int, bias: bool = False, dtype=None
     ):
+        self.world_size = _get_world_size()
         assert (
-            in_features % world_size == 0
-        ), f"Input features must be divisible by world size (world_size={world_size})"
-        self.part_in_features = in_features // world_size
+            in_features % self.world_size == 0
+        ), f"Input features must be divisible by world size (world_size={self.world_size})"
+        self.part_in_features = in_features // self.world_size
         super().__init__(self.part_in_features, out_features, bias, dtype)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -200,7 +223,7 @@ class RowParallelLinear(Linear):
             torch.Tensor: Transformed tensor with row-parallel computation.
         """
         y = linear(x, self.weight)
-        if world_size > 1:
+        if self.world_size > 1:
             dist.all_reduce(y)
         if self.bias is not None:
             y += self.bias
@@ -487,7 +510,7 @@ class MLA(nn.Module):
             wkv_b = (
                 self.wkv_b.weight
                 if self.wkv_b.scale is None
-                else weight_dequant(self.wkv_b.weight, self.wkv_b.scale, block_size)
+                else weight_dequant(self.wkv_b.weight, self.wkv_b.scale, _BLOCK_SIZE)
             )
             wkv_b = wkv_b.view(self.n_local_heads, -1, self.kv_lora_rank)
             q_nope = torch.einsum(

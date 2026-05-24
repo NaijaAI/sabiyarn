@@ -6,29 +6,13 @@ import torch
 import torch.nn.functional as F
 import torch.distributed as dist
 from torch import nn
-from .MLA import Linear, ColumnParallelLinear, RowParallelLinear, linear
+from .MLA import Linear, ColumnParallelLinear, RowParallelLinear, linear, _get_world_size, _get_rank
 
 # Avoid circular import while maintaining type checking
 if TYPE_CHECKING:
     from .model import ModelArgs
 else:
     ModelArgs = None
-
-
-# Default values for non-distributed setup
-def get_distributed_info():
-    """Get distributed training info with fallback for non-distributed setup."""
-    try:
-        if dist.is_available() and dist.is_initialized():
-            return dist.get_world_size(), dist.get_rank()
-        else:
-            return 1, 0
-    except:
-        # Fallback for environments without torch.distributed
-        return 1, 0
-
-
-world_size, rank = get_distributed_info()
 
 
 class MLP(nn.Module):
@@ -98,6 +82,7 @@ class Gate(nn.Module):
         self.route_scale = args.route_scale
         self.score_function = args.score_function
         self.aux_loss_weight = args.moe_aux_loss_weight
+        self.world_size = _get_world_size()
         self.weight = nn.Parameter(torch.empty(args.n_routed_experts, args.dim))
         self.n_routed_experts = args.n_routed_experts
 
@@ -186,7 +171,7 @@ class Gate(nn.Module):
         Update expert bias based on counts.
         """
         with torch.no_grad():
-            if world_size > 1 and dist.is_available() and dist.is_initialized():
+            if self.world_size > 1 and dist.is_available() and dist.is_initialized():
                 dist.all_reduce(counts, dist.ReduceOp.SUM)
             avg_count = counts.float().mean()
             error = avg_count - counts.float()
@@ -253,13 +238,15 @@ class MoE(nn.Module):
         """
         super().__init__()
         self.dim = args.dim
+        self.world_size = _get_world_size()
+        self.rank = _get_rank()
         assert (
-            args.n_routed_experts % world_size == 0
-        ), f"Number of experts must be divisible by world size (world_size={world_size})"
+            args.n_routed_experts % self.world_size == 0
+        ), f"Number of experts must be divisible by world size (world_size={self.world_size})"
         self.n_routed_experts = args.n_routed_experts
-        self.n_local_experts = args.n_routed_experts // world_size
+        self.n_local_experts = args.n_routed_experts // self.world_size
         self.n_activated_experts = args.n_activated_experts
-        self.experts_start_idx = rank * self.n_local_experts
+        self.experts_start_idx = self.rank * self.n_local_experts
         self.experts_end_idx = self.experts_start_idx + self.n_local_experts
         self.gate = Gate(args)
         self.experts = nn.ModuleList(
@@ -304,7 +291,7 @@ class MoE(nn.Module):
         z = self.shared_experts(x_flat)
 
         # All-reduce only in distributed setup
-        if world_size > 1 and dist.is_available() and dist.is_initialized():
+        if self.world_size > 1 and dist.is_available() and dist.is_initialized():
             try:
                 dist.all_reduce(y)
             except RuntimeError as e:

@@ -15,7 +15,10 @@ from datetime import datetime
 import json
 import random
 import string
-import modal
+try:
+    import modal
+except ImportError:
+    modal = None
 
 project_root = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, project_root)
@@ -61,7 +64,10 @@ from training.training_attention_mask import (
 )
 
 from transformers import AutoTokenizer
-from bitsandbytes import optim as bnb_optim
+try:
+    from bitsandbytes import optim as bnb_optim
+except ImportError:
+    bnb_optim = None
 
 try:
     from torch.cuda.amp import GradScaler
@@ -84,12 +90,8 @@ LOG = structlog.stdlib.get_logger()
 def clear_cuda():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()  # also reclaims memory from inter-process communication
+        torch.cuda.ipc_collect()
         print("✅ CUDA cache cleared")
-    else:
-        print("⚠️ CUDA is not available on this device")
-
-clear_cuda()
 
 
 @dataclass
@@ -327,7 +329,7 @@ class TrainingConfig:
 
 
 class SabiYarnTrainer:
-    def __init__(self, config: TrainingConfig, volume: modal.Volume = None):
+    def __init__(self, config: TrainingConfig, volume=None):
         self.local_iter_num = 0
         self.running_mfu = -1.0
         self.step_start_time = time.time()
